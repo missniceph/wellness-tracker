@@ -16,12 +16,12 @@
 
   var view = document.getElementById('view');
   var tabbar = document.getElementById('tabbar');
-  var ui = { tab: 'today', date: null, mWeek: null };
+  var ui = { tab: 'today', date: null, mWeek: null, strengthEx: null };
   var saveTimer = null;
 
   // ---------------- storage ----------------
   function emptyState() {
-    return { version: 1, settings: null, days: {}, weeks: {}, measurements: {}, measureUnit: 'cm', photoLink: '', lastBackup: null };
+    return { version: 1, settings: null, days: {}, weeks: {}, measurements: {}, exercises: [], measureUnit: 'cm', photoLink: '', lastBackup: null };
   }
   function isObj(o) { return !!o && typeof o === 'object' && !Array.isArray(o); }
   function normalize(s) {
@@ -35,6 +35,9 @@
     base.measureUnit = s.measureUnit === 'in' ? 'in' : 'cm';
     base.photoLink = typeof s.photoLink === 'string' ? s.photoLink : '';
     base.lastBackup = typeof s.lastBackup === 'string' ? s.lastBackup : null;
+    base.exercises = (Array.isArray(s.exercises) ? s.exercises : []).filter(function (x) {
+      return isObj(x) && typeof x.id === 'string' && x.id && typeof x.name === 'string' && x.name.trim();
+    });
     return base;
   }
   function isWeekKey(k) { return /^\d+$/.test(k) && Number(k) >= 1 && Number(k) <= C.TOTAL_WEEKS; }
@@ -219,7 +222,12 @@
     } else {
       e[key] = val;
     }
-    if (C.isBlankEntry(e)) delete state.days[date]; else state.days[date] = e;
+    commitDay(date, e);
+  }
+  /** Store a day, or drop it if nothing is in it. A just-added exercise keeps the day while you fill it in. */
+  function commitDay(date, e) {
+    if (e.exercises && !e.exercises.length) delete e.exercises;
+    if (C.isBlankEntry(e) && !e.exercises) delete state.days[date]; else state.days[date] = e;
     saveSoon();
   }
   function getField(e, key) {
@@ -259,6 +267,8 @@
     h += '<section class="card"><h2><span class="dot"></span>Movement</h2>' +
       '<div class="field">' + ynRow('workout', e.workout, 'Worked out?', s.workoutsTarget ? 'Goal: ' + s.workoutsTarget + ' per week' : '') + '</div>' +
       numField('steps', e.steps, 'Steps', '', 'hint-steps', { int: true, placeholder: 'e.g. 5000' }) + '</section>';
+
+    h += '<section class="card" id="workoutCard">' + workoutCard(date) + '</section>';
 
     h += '<section class="card"><h2><span class="dot"></span>Fuel</h2><div class="row2">' +
       numField('calories', e.calories, 'Calories', 'kcal', 'hint-calories', { int: true }) +
@@ -322,6 +332,104 @@
     el.classList.toggle('ok', !!ok);
   }
 
+  // ---------------- WORKOUT LOG (progressive overload) ----------------
+  function exById(id) {
+    for (var i = 0; i < state.exercises.length; i++) if (state.exercises[i].id === id) return state.exercises[i];
+    return null;
+  }
+  function wNum(n) { return C.isNum(n) ? String(Number(n.toFixed(2))) : ''; }
+  function targetText(tg) {
+    var u = unit();
+    if (tg.weight === null) return 'Aim for ' + tg.reps + ' reps in your best set';
+    if (tg.kind === 'weight') return 'Go up to ' + wNum(tg.weight) + ' ' + u + ' × ' + tg.reps + ' reps';
+    return 'Stay at ' + wNum(tg.weight) + ' ' + u + ' and aim for ' + tg.reps + ' reps per set';
+  }
+  function bestText(date, xi) {
+    var x = ((entry(date).exercises) || [])[xi];
+    if (!x) return '';
+    var sm = C.exerciseHistory(state, x.id).filter(function (h) { return h.date === date; })[0];
+    return sm && sm.isBest ? '⭐ New best!' : '';
+  }
+
+  function workoutCard(date) {
+    var list = entry(date).exercises || [];
+    var u = unit();
+    var h = '<h2><span class="dot"></span>Workout log</h2>';
+    if (!list.length) {
+      h += '<p class="muted small" style="margin-top:-4px">Log your sets to track progressive overload. Each exercise shows what you did last time and what to aim for next.</p>';
+    }
+    list.forEach(function (x, xi) {
+      var ex = exById(x.id) || { name: 'Exercise' };
+      var last = C.lastSessionBefore(state, x.id, date);
+      var tg = last ? C.nextTarget(last.setList, state.settings) : null;
+      var phW = tg && tg.weight ? wNum(tg.weight) : '';
+      var phR = tg ? String(tg.reps) : '';
+      h += '<div class="exercise"><div class="ex-head"><h3>' + esc(ex.name) + '</h3><span class="best" id="best-' + xi + '">' + bestText(date, xi) + '</span>' +
+        '<button type="button" class="btn icon" data-act="rmex" data-xi="' + xi + '" aria-label="Remove ' + esc(ex.name) + ' from this day">✕</button></div>';
+      if (last) {
+        h += '<p class="hint">Last time (' + esc(niceDate(last.date, { month: 'short', day: 'numeric' })) + '): ' + esc(C.setsText(last.setList, u)) + '</p>' +
+          (tg ? '<p class="target">' + esc(targetText(tg)) + '</p>' : '');
+      } else {
+        h += '<p class="hint">First time logging this. Today sets your starting point.</p>';
+      }
+      h += '<div class="set-grid" role="group" aria-label="' + esc(ex.name) + ' sets"><span class="set-h" aria-hidden="true">Set</span><span class="set-h" aria-hidden="true">' + u + '</span>' +
+        '<span aria-hidden="true"></span><span class="set-h" aria-hidden="true">Reps</span><span aria-hidden="true"></span>';
+      x.sets.forEach(function (st, si) {
+        var lbl = ex.name + ', set ' + (si + 1);
+        h += '<span class="set-n" aria-hidden="true">' + (si + 1) + '</span>' +
+          '<input type="number" inputmode="decimal" step="any" min="0" data-set="' + xi + ':' + si + ':w" aria-label="' + esc(lbl) + ', weight in ' + u + ' (blank for bodyweight)" placeholder="' + (phW || 'BW') + '" value="' + wNum(st.w) + '">' +
+          '<span class="times" aria-hidden="true">×</span>' +
+          '<input type="number" inputmode="numeric" step="1" min="0" data-set="' + xi + ':' + si + ':r" aria-label="' + esc(lbl) + ', reps" placeholder="' + phR + '" value="' + (C.isNum(st.r) ? st.r : '') + '">' +
+          '<button type="button" class="btn icon" data-act="rmset" data-xi="' + xi + '" data-si="' + si + '" aria-label="Remove ' + esc(lbl) + '">✕</button>';
+      });
+      h += '</div><button type="button" class="btn add-set" data-act="addset" data-xi="' + xi + '">+ Add set</button></div>';
+    });
+    var used = list.map(function (x) { return x.id; });
+    var recent = C.trainedExercises(state).filter(function (ex) { return used.indexOf(ex.id) < 0; }).slice(0, 8);
+    h += '<div class="add-ex"><label for="newEx">Add an exercise</label><div class="add-row">' +
+      '<input type="text" id="newEx" list="exList" maxlength="60" placeholder="e.g. Goblet squat" autocomplete="off" enterkeyhint="done">' +
+      '<button type="button" class="btn primary" data-act="addex">Add</button></div>' +
+      '<datalist id="exList">' + state.exercises.map(function (ex) { return '<option value="' + esc(ex.name) + '">'; }).join('') + '</datalist>';
+    if (recent.length) {
+      h += '<div class="chips" role="group" aria-label="Your recent exercises">' + recent.map(function (ex) {
+        return '<button type="button" class="chip-btn" data-act="addexid" data-id="' + esc(ex.id) + '">+ ' + esc(ex.name) + '</button>';
+      }).join('') + '</div>';
+    }
+    return h + '</div>';
+  }
+  function refreshWorkout(focusSel) {
+    var el = document.getElementById('workoutCard');
+    if (!el) return;
+    el.innerHTML = workoutCard(ui.date);
+    var f = focusSel && el.querySelector(focusSel);
+    if (f) f.focus();
+  }
+  function findOrCreateExercise(name) {
+    var key = name.trim().toLowerCase();
+    for (var i = 0; i < state.exercises.length; i++) if (state.exercises[i].name.trim().toLowerCase() === key) return state.exercises[i];
+    var ex = { id: 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: name.trim().slice(0, 60) };
+    state.exercises.push(ex);
+    return ex;
+  }
+  function addExerciseToDay(id) {
+    var date = ui.date, e = state.days[date] || {};
+    e.exercises = e.exercises || [];
+    var at = e.exercises.map(function (x) { return x.id; }).indexOf(id);
+    if (at < 0) {
+      // Pre-fill this session from last time: same number of sets, at the suggested weight.
+      var last = C.lastSessionBefore(state, id, date);
+      var tg = last ? C.nextTarget(last.setList, state.settings) : null;
+      var n = last ? Math.min(Math.max(last.sets, 1), 8) : 3;
+      var w = tg && tg.weight ? tg.weight : null;
+      var sets = [];
+      for (var i = 0; i < n; i++) sets.push({ w: w, r: null });
+      e.exercises.push({ id: id, sets: sets });
+      at = e.exercises.length - 1;
+    }
+    commitDay(date, e);
+    refreshWorkout('[data-set="' + at + ':0:' + (e.exercises[at].sets[0] && e.exercises[at].sets[0].w ? 'r' : 'w') + '"]');
+  }
+
   // ---------------- DASHBOARD ----------------
   function renderDashboard() {
     var s = state.settings;
@@ -372,7 +480,80 @@
     h += '<section class="card"><h2><span class="dot"></span>Weekly scores</h2>' + scoreChart(weeks, d.week) +
       '<div class="legend"><span class="r-Excellent"><i style="background:var(--r)"></i>90%+ Excellent</span><span class="r-Strong"><i style="background:var(--r)"></i>75%+ Strong</span>' +
       '<span class="r-Building"><i style="background:var(--r)"></i>60%+ Building</span><span class="r-Reset"><i style="background:var(--r)"></i>Reset &amp; refocus</span></div></section></div>';
+    h += strengthCard();
     view.innerHTML = h;
+  }
+
+  function bestSetOf(sm) {
+    var b = null;
+    sm.setList.forEach(function (st) {
+      var v = sm.bodyweight ? st.r : C.e1rm(st.w, st.r);
+      if (v !== null && (b === null || v > b.v)) b = { v: v, st: st };
+    });
+    return b && b.st;
+  }
+  function setLabel(st) { return st ? (st.w ? wNum(st.w) + ' ' + unit() + ' × ' + st.r : st.r + ' reps') : '—'; }
+
+  function strengthCard() {
+    var trained = C.trainedExercises(state);
+    var h = '<section class="card" id="strength"><h2><span class="dot"></span>Strength progress</h2>';
+    if (!trained.length) {
+      return h + '<p class="empty">Log your sets in the Workout log on the Today screen to see your progressive overload here.</p></section>';
+    }
+    var id = trained.some(function (ex) { return ex.id === ui.strengthEx; }) ? ui.strengthEx : trained[0].id;
+    var sm = C.strengthSummary(state, id);
+    var bw = sm.bodyweight;
+    var tg = C.nextTarget(sm.latest.setList, state.settings);
+    h += '<div class="field"><label for="strengthEx">Exercise</label><select id="strengthEx">' + trained.map(function (ex) {
+      return '<option value="' + esc(ex.id) + '"' + (ex.id === id ? ' selected' : '') + '>' + esc(ex.name) + '</option>';
+    }).join('') + '</select></div>';
+    h += '<div class="avg4 avg3">' +
+      avgCell('Sessions', String(sm.sessions)) +
+      avgCell('Best set', esc(setLabel(bestSetOf(sm.best)))) +
+      avgCell(bw ? 'Best reps vs. first' : 'Est. max vs. first', sm.sessions > 1 && C.isNum(sm.change) ?
+        '<span class="' + (sm.change > 0 ? 'down' : sm.change < 0 ? 'up' : '') + '">' + signed(sm.change * 100, 0, '%') + '</span>' : '—') +
+      '</div>';
+    h += strengthChart(sm);
+    h += '<div class="legend"><span><i style="background:var(--teal)"></i>' + (bw ? 'Best set (reps)' : 'Est. 1-rep max') + '</span><span><i style="background:var(--coral)"></i>New best</span></div>';
+    if (tg) h += '<p class="target" style="margin-top:12px">Next time: ' + esc(targetText(tg)) + '</p>';
+    var recent = sm.history.slice(-5).reverse();
+    h += '<div class="table-wrap" tabindex="0" role="region" aria-label="Recent sessions"><table class="hist"><caption class="sr-only">Recent sessions</caption>' +
+      '<thead><tr><th>Date</th><th class="wrap">Sets</th>' + (bw ? '' : '<th>Est. max</th>') + '<th><span class="sr-only">New best</span></th></tr></thead><tbody>' +
+      recent.map(function (r) {
+        return '<tr><td>' + esc(niceDate(r.date, { month: 'short', day: 'numeric' })) + '</td><td class="wrap">' + esc(C.setsText(r.setList, unit())) + '</td>' +
+          (bw ? '' : '<td>' + (C.isNum(r.bestE1RM) ? fmt(r.bestE1RM, 1) : '—') + '</td>') + '<td>' + (r.isBest ? '⭐<span class="sr-only">New best</span>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    if (!bw) h += '<p class="hint">Est. max is an estimated 1-rep max (Epley formula). It lets you compare sets with different reps; you never need to test it.</p>';
+    return h + '</section>';
+  }
+
+  function strengthChart(sm) {
+    var hist = sm.history;
+    var pts = hist.map(function (r) { return { r: r, v: sm.bodyweight ? r.maxReps : r.bestE1RM }; }).filter(function (p) { return C.isNum(p.v); });
+    if (pts.length < 2) return '<p class="muted small">Log this exercise again to see your progress line.</p>';
+    var W = 340, H = 170, L = 34, R = 12, T = 12, B = 22;
+    var vs = pts.map(function (p) { return p.v; });
+    var lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs);
+    var pad = Math.max(sm.bodyweight ? 1 : 0.5, (hi - lo) * 0.15);
+    lo = Math.max(0, lo - pad); hi += pad;
+    function x(i) { return L + i / (pts.length - 1) * (W - L - R); }
+    function y(v) { return T + (hi - v) / (hi - lo) * (H - T - B); }
+    var g = '';
+    for (var i = 0; i <= 3; i++) {
+      var v = lo + (hi - lo) * i / 3;
+      g += '<line class="grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"/>' +
+        '<text x="' + (L - 5) + '" y="' + (y(v) + 3).toFixed(1) + '" text-anchor="end">' + (sm.bodyweight ? Math.round(v) : v.toFixed(1)) + '</text>';
+    }
+    g += '<text x="' + L + '" y="' + (H - 6) + '">' + esc(niceDate(pts[0].r.date, { month: 'short', day: 'numeric' })) + '</text>' +
+      '<text x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">' + esc(niceDate(pts[pts.length - 1].r.date, { month: 'short', day: 'numeric' })) + '</text>';
+    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.v).toFixed(1); }).join(' ');
+    var dots = pts.map(function (p, i) {
+      return '<circle class="' + (p.r.isBest ? 'pt' : 'pt-plain') + '" r="' + (p.r.isBest ? 4 : 3) + '" cx="' + x(i).toFixed(1) + '" cy="' + y(p.v).toFixed(1) + '"><title>' +
+        esc(niceDate(p.r.date, { month: 'short', day: 'numeric' })) + ': ' + esc(C.setsText(p.r.setList, unit())) + '</title></circle>';
+    }).join('');
+    var label = (sm.bodyweight ? 'Best reps' : 'Estimated 1-rep max') + ' over ' + pts.length + ' sessions, from ' +
+      (sm.bodyweight ? pts[0].v : pts[0].v.toFixed(1)) + ' to ' + (sm.bodyweight ? pts[pts.length - 1].v : pts[pts.length - 1].v.toFixed(1));
+    return '<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(label) + '">' + g + '<path class="trend" d="' + line + '"/>' + dots + '</svg>';
   }
   function tile(k, v, small, accent) {
     return '<div class="tile' + (accent ? ' accent' : '') + '"><div class="k">' + esc(k) + '</div><div class="v">' + v + '<small>' + (small || '') + '</small></div></div>';
@@ -485,6 +666,12 @@
         stat('Hunger', C.isNum(x.avgHunger) ? fmt(x.avgHunger, 1) + '/5' : '—') +
         stat('Daily habits', pct(x.dailyHabitsPct)) +
         stat('Extra habits', pct(x.extraHabitsPct)) +
+        (state.exercises.length ?
+          stat('Sets lifted', String(x.liftSets)) +
+          stat('New bests', x.newBests ? '⭐ ' + x.newBests : '0') +
+          stat('Lifting volume', x.liftVolume ? fmt(x.liftVolume) + ' ' + unit() : '—') +
+          stat('vs. last week', C.isNum(x.liftVolumeChange) ? '<span class="' + (x.liftVolumeChange > 0 ? 'down' : x.liftVolumeChange < 0 ? 'up' : '') + '">' +
+            signed(x.liftVolumeChange * 100, 0, '%') + '</span>' : '—') : '') +
         '</dl>';
       if (x.habits.length) {
         h += '<div class="habit-list">' + x.habits.map(function (hb) {
@@ -623,6 +810,22 @@
           '<select name="habitTarget" aria-label="Habit ' + (i + 1) + ' days per week">' + opts + '</select>' +
           '<button type="button" class="btn icon" data-act="rmhabit" aria-label="Remove habit ' + (i + 1) + '">✕</button></div>';
       }).join('') + '</section>';
+    var ls = C.liftSettings(s);
+    function repOpts(sel) { var o = ''; for (var r = 1; r <= 30; r++) o += '<option value="' + r + '"' + (r === sel ? ' selected' : '') + '>' + r + '</option>'; return o; }
+    h += '<section class="card"><h2><span class="dot"></span>Strength training</h2>' +
+      '<p class="hint" style="margin-top:-6px;margin-bottom:12px">Used for the “aim for” suggestions in your Workout log. When every set reaches the top of your rep range, it suggests going up one weight step.</p>' +
+      '<div class="row2"><div class="field"><label for="s-repLow">Reps: from</label><select id="s-repLow" name="repLow">' + repOpts(ls.lo) + '</select></div>' +
+      '<div class="field"><label for="s-repHigh">to</label><select id="s-repHigh" name="repHigh">' + repOpts(ls.hi) + '</select></div></div>' +
+      '<div class="field"><label for="s-liftIncrement">Weight step (<span class="unit-lbl">' + u + '</span>)</label>' +
+      '<input type="number" id="s-liftIncrement" name="liftIncrement" inputmode="decimal" step="any" min="0" value="' + ls.inc + '"></div>';
+    if (state.exercises.length && !isSetup) {
+      h += '<div class="field"><div class="label">My exercises</div><p class="hint" style="margin-top:0">Renaming keeps the history. ✕ deletes the exercise and all its logged sets.</p>' +
+        state.exercises.map(function (ex, i) {
+          return '<div class="habit-edit ex-edit"><input type="text" name="exName" maxlength="60" data-exid="' + esc(ex.id) + '" aria-label="Exercise ' + (i + 1) + ' name" value="' + esc(ex.name) + '">' +
+            '<button type="button" class="btn icon" data-act="rmexdef" aria-label="Delete ' + esc(ex.name) + '">✕</button></div>';
+        }).join('') + '</div>';
+    }
+    h += '</section>';
     h += '<div id="formErr" class="err" role="alert"></div>';
     h += '<button type="submit" class="btn primary block" style="margin-bottom:14px">' + (isSetup ? 'Start my 100 days' : 'Save settings') + '</button></form>';
     return h;
@@ -700,6 +903,9 @@
       proteinTarget: num('proteinTarget'), calorieTarget: num('calorieTarget'),
       why: form.elements.why.value.trim().slice(0, 500),
       habits: habits,
+      repLow: Number(form.elements.repLow.value) || 8,
+      repHigh: Math.max(Number(form.elements.repHigh.value) || 12, Number(form.elements.repLow.value) || 8),
+      liftIncrement: num('liftIncrement') || null,
       _prevUnit: prev.unit
     };
   }
@@ -708,6 +914,9 @@
     Object.keys(state.days).forEach(function (d) {
       var e = state.days[d];
       if (C.isNum(e.weight)) e.weight = Math.round(e.weight * factor * 10) / 10;
+      (e.exercises || []).forEach(function (x) {
+        (x.sets || []).forEach(function (st) { if (C.isNum(st.w)) st.w = Math.round(st.w * factor * 10) / 10; });
+      });
     });
   }
 
@@ -725,6 +934,26 @@
     var prevUnit = s._prevUnit;
     delete s._prevUnit;
     var isSetup = !state.settings;
+    // Exercise renames / deletions
+    var removed = [];
+    Array.prototype.forEach.call(form.querySelectorAll('[name="exName"]'), function (inp) {
+      var ex = exById(inp.getAttribute('data-exid'));
+      if (!ex) return;
+      if (inp.getAttribute('data-removed') === '1') removed.push(ex);
+      else if (inp.value.trim()) ex.name = inp.value.trim().slice(0, 60);
+    });
+    if (removed.length) {
+      if (!window.confirm('Delete ' + removed.map(function (ex) { return ex.name; }).join(', ') + ' and every set you logged for ' + (removed.length > 1 ? 'them' : 'it') + '?')) return;
+      var ids = removed.map(function (ex) { return ex.id; });
+      state.exercises = state.exercises.filter(function (ex) { return ids.indexOf(ex.id) < 0; });
+      Object.keys(state.days).forEach(function (d) {
+        var e = state.days[d];
+        if (!e.exercises) return;
+        e.exercises = e.exercises.filter(function (x) { return ids.indexOf(x.id) < 0; });
+        if (!e.exercises.length) delete e.exercises;
+        if (C.isBlankEntry(e) && !e.exercises) delete state.days[d];
+      });
+    }
     if (!isSetup && prevUnit && prevUnit !== s.unit) {
       convertWeights(s.unit === 'lbs' ? LBS_PER_KG : 1 / LBS_PER_KG);
     }
@@ -804,6 +1033,20 @@
     };
     var days = {};
     var blanks = { 6: 1, 17: 1, 18: 1, 26: 1 };
+    var exercises = [
+      { id: 'xsq', name: 'Goblet squat' }, { id: 'xbp', name: 'Dumbbell bench press' }, { id: 'xpu', name: 'Push-ups' },
+      { id: 'xrdl', name: 'Romanian deadlift' }, { id: 'xlat', name: 'Lat pulldown' }
+    ];
+    var prog = { xsq: { w: 12, r: 8 }, xbp: { w: 6, r: 9 }, xpu: { w: null, r: 6 }, xrdl: { w: 16, r: 8 }, xlat: { w: 25, r: 10 } };
+    var nextA = true;
+    function session(id) {
+      var p = prog[id], sets = [];
+      for (var k = 0; k < 3; k++) sets.push({ w: p.w, r: Math.max(1, p.r - (k === 2 && rnd() < 0.4 ? 1 : 0)) });
+      if (p.w === null) p.r += rnd() < 0.7 ? 1 : 0;
+      else if (sets.every(function (st) { return st.r >= 12; })) { p.w += 2.5; p.r = 8; }
+      else p.r = Math.min(12, p.r + (rnd() < 0.75 ? 1 : 0));
+      return { id: id, sets: sets };
+    }
     var wins = ['Chose grilled over fried at lunch', 'Walked to the market', 'Morning workout before work', 'Slept before 11', 'Said no to the extra rice', 'Played pickleball with friends'];
     for (var d = 1; d <= 32; d++) {
       if (blanks[d]) continue;
@@ -814,6 +1057,10 @@
       e.period = d >= 12 && d <= 16;
       e.sleep = 2 + Math.floor(rnd() * 4);
       e.workout = pick(0.6);
+      if (e.workout && !isToday) {
+        e.exercises = (nextA ? ['xsq', 'xbp', 'xpu'] : ['xrdl', 'xlat']).map(session);
+        nextA = !nextA;
+      }
       e.steps = Math.round((3000 + rnd() * 5500) / 10) * 10;
       e.water = pick(0.75);
       if (!isToday) {
@@ -841,7 +1088,7 @@
       3: { date: C.dateForDay(start, 15), chest: 91.2, rightArm: 30.6, leftArm: 30.2, waistAbove: 78.5, waistNavel: 84.4, lowerBelly: 92.8, hips: 103, rightThigh: 58.4, leftThigh: 58, calf: 36.8 },
       5: { date: C.dateForDay(start, 29), chest: 90.6, rightArm: 30.3, leftArm: 30, waistAbove: 77.4, waistNavel: 83.2, lowerBelly: 91.5, hips: 102.1, rightThigh: 57.9, leftThigh: 57.6 }
     };
-    return { version: 1, settings: s, days: days, weeks: weeks, measurements: meas, measureUnit: 'cm', photoLink: '', lastBackup: null };
+    return { version: 1, settings: s, days: days, weeks: weeks, measurements: meas, exercises: exercises, measureUnit: 'cm', photoLink: '', lastBackup: null };
   }
   function loadSample() {
     var has = state.settings && Object.keys(state.days).length;
@@ -904,6 +1151,48 @@
     if (act === 'import') return document.getElementById('importFile').click();
     if (act === 'sample') return loadSample();
     if (act === 'clear') return clearAll();
+    if (act === 'addex') {
+      var ni = document.getElementById('newEx');
+      if (!ni.value.trim()) { ni.focus(); return; }
+      var ex = findOrCreateExercise(ni.value);
+      addExerciseToDay(ex.id);
+      return;
+    }
+    if (act === 'addexid') return addExerciseToDay(b.getAttribute('data-id'));
+    if (act === 'addset' || act === 'rmset' || act === 'rmex') {
+      var de = state.days[ui.date] || {};
+      var xi = Number(b.getAttribute('data-xi'));
+      var xx = de.exercises && de.exercises[xi];
+      if (!xx) return;
+      if (act === 'addset') {
+        var prevSet = xx.sets[xx.sets.length - 1] || {};
+        xx.sets.push({ w: C.isNum(prevSet.w) ? prevSet.w : null, r: null });
+        commitDay(ui.date, de);
+        refreshWorkout('[data-set="' + xi + ':' + (xx.sets.length - 1) + ':r"]');
+      } else if (act === 'rmset') {
+        xx.sets.splice(Number(b.getAttribute('data-si')), 1);
+        if (!xx.sets.length) de.exercises.splice(xi, 1);
+        commitDay(ui.date, de);
+        refreshWorkout('#newEx');
+      } else {
+        var exn = (exById(xx.id) || { name: 'this exercise' }).name;
+        if (C.validSets(xx).length && !window.confirm('Remove ' + exn + ' and its sets from this day?')) return;
+        de.exercises.splice(xi, 1);
+        commitDay(ui.date, de);
+        refreshWorkout('#newEx');
+      }
+      return;
+    }
+    if (act === 'rmexdef') {
+      var row = b.parentNode, ei = row.querySelector('[name="exName"]');
+      var gone = ei.getAttribute('data-removed') === '1';
+      ei.setAttribute('data-removed', gone ? '0' : '1');
+      ei.disabled = !gone;
+      row.classList.toggle('removed', !gone);
+      b.textContent = gone ? '✕' : '↺';
+      b.setAttribute('aria-label', (gone ? 'Delete ' : 'Keep ') + ei.value);
+      return;
+    }
     if (act === 'rmhabit') {
       var inp = b.parentNode.querySelector('[name="habitName"]');
       inp.value = '';
@@ -942,9 +1231,12 @@
           var v = parseNum(f.elements[n].value);
           if (v !== null) f.elements[n].value = Math.round(v * factor * 10) / 10;
         });
+        var inc = parseNum(f.elements.liftIncrement.value);
+        if (inc !== null) f.elements.liftIncrement.value = (u === 'lbs' && inc === 2.5) ? 5 : (u === 'kg' && inc === 5) ? 2.5 : Math.round(inc * factor * 2) / 2;
         document.getElementById('unitHint').textContent = 'Goals converted to ' + u + '. Your logged weights will be converted when you save.';
       }
       f.elements.unit.value = u;
+      Array.prototype.forEach.call(f.querySelectorAll('.unit-lbl'), function (x) { x.textContent = u; });
       Array.prototype.forEach.call(b.parentNode.querySelectorAll('button'), function (x) { x.setAttribute('aria-pressed', String(x === b)); });
       return;
     }
@@ -963,6 +1255,25 @@
       if (v !== null && k !== 'weight') v = Math.round(v);
       setField(ui.date, k, v);
       updateTodayLive();
+    } else if (t.hasAttribute('data-set')) {
+      var parts = t.getAttribute('data-set').split(':');
+      var se = state.days[ui.date] || {};
+      var sx = se.exercises && se.exercises[Number(parts[0])];
+      var st = sx && sx.sets[Number(parts[1])];
+      if (!st) return;
+      var sv = parseNum(t.value);
+      if (sv !== null && sv <= 0) sv = null;
+      if (parts[2] === 'w') st.w = sv === null ? null : Math.round(sv * 100) / 100;
+      else st.r = sv === null ? null : Math.round(sv);
+      if (parts[2] === 'r' && st.r && se.workout === undefined) {
+        se.workout = true; // logging sets means you worked out
+        Array.prototype.forEach.call(view.querySelectorAll('[data-yn="workout"]'), function (x) {
+          x.setAttribute('aria-pressed', String(x.getAttribute('data-val') === 'true'));
+        });
+      }
+      commitDay(ui.date, se);
+      var bd = document.getElementById('best-' + parts[0]);
+      if (bd) bd.textContent = bestText(ui.date, Number(parts[0]));
     } else if (t.hasAttribute('data-text')) {
       setField(ui.date, t.getAttribute('data-text'), t.value);
     } else if (t.hasAttribute('data-prio')) {
@@ -1005,6 +1316,11 @@
       if (C.isValidDate(t.value)) { flush(); ui.date = clampDate(t.value); renderToday(); }
     } else if (t.id === 'mWeek') {
       flush(); ui.mWeek = Number(t.value); renderMeasurements();
+    } else if (t.id === 'strengthEx') {
+      ui.strengthEx = t.value;
+      renderDashboard();
+      var se2 = document.getElementById('strengthEx');
+      if (se2) se2.focus();
     } else if (t.id === 'mDate') {
       var m = state.measurements[ui.mWeek] || {};
       if (C.isValidDate(t.value)) m.date = t.value; else delete m.date;
@@ -1015,8 +1331,15 @@
     } else if (t.id === 'importFile' && t.files && t.files[0]) {
       importBackup(t.files[0]);
       t.value = '';
-    } else if (t.hasAttribute('data-num') || t.hasAttribute('data-text') || t.hasAttribute('data-wtext') || t.hasAttribute('data-meas')) {
+    } else if (t.hasAttribute('data-num') || t.hasAttribute('data-text') || t.hasAttribute('data-wtext') || t.hasAttribute('data-meas') || t.hasAttribute('data-set')) {
       flush();
+    }
+  });
+
+  view.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' && ev.target.id === 'newEx') {
+      ev.preventDefault();
+      view.querySelector('[data-act="addex"]').click();
     }
   });
 

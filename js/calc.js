@@ -94,6 +94,7 @@
       if (v === null || v === undefined || v === '') return false;
       if (k === 'habits') return Object.keys(v || {}).some(function (h) { return v[h] === true || v[h] === false; });
       if (k === 'priorities') return (v || []).some(function (p) { return p && String(p).trim(); });
+      if (k === 'exercises') return (v || []).some(function (x) { return validSets(x).length > 0; });
       return true;
     });
   }
@@ -145,6 +146,7 @@
       workoutPct: null, avgSteps: null, stepsPct: null, avgCalories: null, avgProtein: null,
       avgSleep: null, avgStress: null, avgFatigue: null, avgHunger: null,
       dailyHabitsPct: null, extraHabitsPct: null, habits: [],
+      liftSets: 0, liftVolume: 0, liftVolumeChange: null, newBests: 0,
       fitnessScore: null, habitScore: null, weeklyScore: null, rating: null
     };
     if (!daysSoFar) return res;
@@ -197,6 +199,17 @@
     res.habitScore = avg([res.dailyHabitsPct, res.extraHabitsPct]);
     res.weeklyScore = avg([res.fitnessScore, res.habitScore]);
     res.rating = ratingFor(res.weeklyScore);
+
+    entries.forEach(function (e) { var dl = dayLift(e); res.liftSets += dl.sets; res.liftVolume += dl.volume; });
+    if (w > 1 && res.liftVolume > 0) {
+      var pr = weekRange(w - 1), prevVol = 0;
+      for (var pd = pr.first; pd <= pr.last; pd++) prevVol += dayLift(state.days[dateForDay(s.startDate, pd)]).volume;
+      res.liftVolumeChange = prevVol > 0 ? (res.liftVolume - prevVol) / prevVol : null;
+    }
+    var weekDates = items.map(function (x) { return x.date; });
+    (state.exercises || []).forEach(function (ex) {
+      exerciseHistory(state, ex.id).forEach(function (sm) { if (sm.isBest && weekDates.indexOf(sm.date) >= 0) res.newBests++; });
+    });
     return res;
   }
 
@@ -355,6 +368,147 @@
     return { baseWeek: base, fields: fields, total: any ? total : null };
   }
 
+  // ---------- strength / progressive overload ----------
+  var E1RM_MAX_REPS = 15;
+
+  /** Sets that count: reps of 1 or more. Weight is optional (blank = bodyweight). */
+  function validSets(ex) {
+    return ((ex && ex.sets) || []).filter(function (st) { return st && isNum(st.r) && st.r >= 1; });
+  }
+
+  /** Estimated 1-rep max (Epley formula). Only for weighted sets of 1–15 reps. */
+  function e1rm(w, r) {
+    if (!isNum(w) || w <= 0 || !isNum(r) || r < 1 || r > E1RM_MAX_REPS) return null;
+    return r === 1 ? w : w * (1 + r / 30);
+  }
+
+  /** Numbers for one exercise on one day. */
+  function sessionSummary(ex) {
+    var sets = validSets(ex);
+    var weighted = sets.filter(function (st) { return isNum(st.w) && st.w > 0; });
+    var top = weighted.length ? Math.max.apply(null, weighted.map(function (st) { return st.w; })) : null;
+    var best = null;
+    weighted.forEach(function (st) { var v = e1rm(st.w, st.r); if (v !== null && (best === null || v > best)) best = v; });
+    return {
+      sets: sets.length,
+      totalReps: sets.reduce(function (a, st) { return a + st.r; }, 0),
+      maxReps: sets.length ? Math.max.apply(null, sets.map(function (st) { return st.r; })) : null,
+      volume: weighted.reduce(function (a, st) { return a + st.w * st.r; }, 0),
+      topWeight: top,
+      repsAtTop: top === null ? null : Math.max.apply(null, weighted.filter(function (st) { return st.w === top; }).map(function (st) { return st.r; })),
+      bestE1RM: best,
+      bodyweight: sets.length > 0 && weighted.length === 0
+    };
+  }
+
+  /**
+   * Every session of one exercise, oldest first. A session is a "new best" when it beats
+   * all earlier sessions: higher estimated 1-rep max (weighted), or more reps in one set (bodyweight).
+   */
+  function exerciseHistory(state, exId) {
+    var out = [];
+    Object.keys(state.days || {}).sort().forEach(function (date) {
+      var list = (state.days[date] && state.days[date].exercises) || [];
+      list.forEach(function (x) {
+        if (x.id !== exId || !validSets(x).length) return;
+        var sm = sessionSummary(x);
+        sm.date = date;
+        sm.setList = validSets(x);
+        out.push(sm);
+      });
+    });
+    var bestScore = null;
+    out.forEach(function (sm) {
+      var score = sm.bodyweight ? sm.maxReps : sm.bestE1RM;
+      sm.isBest = bestScore !== null && score !== null && score > bestScore + 1e-9;
+      if (score !== null && (bestScore === null || score > bestScore)) bestScore = score;
+    });
+    return out;
+  }
+
+  function lastSessionBefore(state, exId, date) {
+    var h = exerciseHistory(state, exId).filter(function (sm) { return sm.date < date; });
+    return h.length ? h[h.length - 1] : null;
+  }
+
+  function liftSettings(settings) {
+    var s = settings || {};
+    var lo = isNum(s.repLow) && s.repLow >= 1 ? s.repLow : 8;
+    var hi = isNum(s.repHigh) && s.repHigh >= lo ? s.repHigh : Math.max(lo, 12);
+    var inc = isNum(s.liftIncrement) && s.liftIncrement > 0 ? s.liftIncrement : (s.unit === 'lbs' ? 5 : 2.5);
+    return { lo: lo, hi: hi, inc: inc };
+  }
+
+  /**
+   * What to aim for next time (double progression):
+   *  - every set at your heaviest weight reached the top of the rep range → add one weight step, restart at the bottom of the range
+   *  - otherwise → same weight, one more rep (up to the top of the range)
+   *  - bodyweight → one more rep than your best set
+   */
+  function nextTarget(sets, settings) {
+    var valid = (sets || []).filter(function (st) { return st && isNum(st.r) && st.r >= 1; });
+    if (!valid.length) return null;
+    var ls = liftSettings(settings);
+    var weighted = valid.filter(function (st) { return isNum(st.w) && st.w > 0; });
+    if (!weighted.length) {
+      var mx = Math.max.apply(null, valid.map(function (st) { return st.r; }));
+      return { kind: 'reps', weight: null, reps: mx + 1, sets: valid.length };
+    }
+    var top = Math.max.apply(null, weighted.map(function (st) { return st.w; }));
+    var working = weighted.filter(function (st) { return st.w === top; });
+    var lowest = Math.min.apply(null, working.map(function (st) { return st.r; }));
+    if (lowest >= ls.hi) {
+      return { kind: 'weight', weight: Math.round((top + ls.inc) * 100) / 100, reps: ls.lo, sets: working.length };
+    }
+    return { kind: 'reps', weight: top, reps: Math.min(ls.hi, Math.max(lowest + 1, ls.lo)), sets: working.length };
+  }
+
+  /** "3 × 10 @ 20 kg", "20 kg × 10, 10, 9", "20 kg × 10, 22.5 kg × 8", "3 × 12" or "12, 10, 9 reps". */
+  function setsText(sets, unit) {
+    var v = (sets || []).filter(function (st) { return st && isNum(st.r) && st.r >= 1; });
+    if (!v.length) return '';
+    var u = unit ? ' ' + unit : '';
+    var same = v.every(function (st) { return st.r === v[0].r && (st.w || null) === (v[0].w || null); });
+    if (same) return v.length + ' × ' + v[0].r + (v[0].w ? ' @ ' + v[0].w + u : '');
+    if (v.every(function (st) { return !st.w; })) return v.map(function (st) { return st.r; }).join(', ') + ' reps';
+    if (v.every(function (st) { return st.w && st.w === v[0].w; })) return v[0].w + u + ' × ' + v.map(function (st) { return st.r; }).join(', ');
+    return v.map(function (st) { return (st.w ? st.w + u : 'BW') + ' × ' + st.r; }).join(', ');
+  }
+
+  function dayLift(entry) {
+    var res = { sets: 0, volume: 0 };
+    ((entry && entry.exercises) || []).forEach(function (x) {
+      var sm = sessionSummary(x);
+      res.sets += sm.sets;
+      res.volume += sm.volume;
+    });
+    return res;
+  }
+
+  /** Exercises that have at least one session, most recently trained first. */
+  function trainedExercises(state) {
+    var last = {};
+    Object.keys(state.days || {}).forEach(function (date) {
+      ((state.days[date] && state.days[date].exercises) || []).forEach(function (x) {
+        if (validSets(x).length && (!last[x.id] || date > last[x.id])) last[x.id] = date;
+      });
+    });
+    return (state.exercises || []).filter(function (ex) { return last[ex.id]; })
+      .sort(function (a, b) { return last[b.id] < last[a.id] ? -1 : last[b.id] > last[a.id] ? 1 : 0; });
+  }
+
+  function strengthSummary(state, exId) {
+    var h = exerciseHistory(state, exId);
+    if (!h.length) return null;
+    var first = h[0], latest = h[h.length - 1];
+    var bw = h.every(function (sm) { return sm.bodyweight; });
+    var score = function (sm) { return bw ? sm.maxReps : sm.bestE1RM; };
+    var best = h.reduce(function (b, sm) { return (score(sm) || 0) > (score(b) || 0) ? sm : b; }, h[0]);
+    var change = (score(first) && score(latest) !== null) ? (score(latest) - score(first)) / score(first) : null;
+    return { history: h, sessions: h.length, first: first, latest: latest, best: best, bodyweight: bw,
+      change: change, bestCount: h.filter(function (sm) { return sm.isBest; }).length };
+  }
+
   // ---------- CSV ----------
   function csvCell(v) {
     if (v === null || v === undefined) return '';
@@ -371,7 +525,9 @@
     var head = ['date', 'day', 'week', 'weight', 'trend_weight_7d', 'period', 'sleep_1_5', 'worked_out',
       'steps', 'calories', 'protein_g', 'water_goal', 'stress_1_5', 'fatigue_1_5', 'hunger_1_5']
       .concat(habits.map(function (h) { return 'habit: ' + h.name; }))
-      .concat(['reviewed_why', 'planned_tomorrow', 'daily_habits_pct', 'priorities', 'wins', 'notes']);
+      .concat(['reviewed_why', 'planned_tomorrow', 'daily_habits_pct', 'exercises', 'priorities', 'wins', 'notes']);
+    var exName = {};
+    (state.exercises || []).forEach(function (ex) { exName[ex.id] = ex.name; });
     var rows = [head];
     for (var d = 1; d <= TOTAL_DAYS; d++) {
       var date = dateForDay(s.startDate, d);
@@ -382,6 +538,8 @@
         e.steps, e.calories, e.protein, yn(e.water), e.stress, e.fatigue, e.hunger]
         .concat(habits.map(function (h) { return yn(e.habits && e.habits[h.id]); }))
         .concat([yn(e.reviewedWhy), yn(e.plannedTomorrow), Math.round(dailyHabitsPct(e, s) * 100),
+          (e.exercises || []).filter(function (x) { return validSets(x).length; })
+            .map(function (x) { return (exName[x.id] || 'Exercise') + ': ' + setsText(x.sets, s.unit); }).join(' | '),
           (e.priorities || []).filter(Boolean).join(' | '), e.wins, e.notes]));
     }
     return rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n') + '\r\n';
@@ -395,6 +553,9 @@
     hasProteinTarget: hasProteinTarget, proteinHit: proteinHit, dailyHabitsPct: dailyHabitsPct,
     isBlankEntry: isBlankEntry, trendWeight: trendWeight, activeHabits: activeHabits,
     weekStats: weekStats, allWeekStats: allWeekStats, ratingFor: ratingFor,
+    validSets: validSets, e1rm: e1rm, sessionSummary: sessionSummary, exerciseHistory: exerciseHistory,
+    lastSessionBefore: lastSessionBefore, liftSettings: liftSettings, nextTarget: nextTarget, setsText: setsText,
+    dayLift: dayLift, trainedExercises: trainedExercises, strengthSummary: strengthSummary,
     dashboardStats: dashboardStats, weightSeries: weightSeries, goalDirection: goalDirection,
     measurementTotal: measurementTotal, measurementChanges: measurementChanges,
     baselineWeek: baselineWeek, hasMeasurements: hasMeasurements, toCSV: toCSV

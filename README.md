@@ -5,6 +5,7 @@ A private, phone-first tracker for my 100-day fitness and habit challenge.
 - **Private:** no account, no login, no tracking, no AI. Everything is saved **only on your phone**, in the browser.
 - **Works offline** once it's been opened, and installs to your home screen like an app.
 - **Five screens:** Today · Dashboard · Weekly · Measurements · Settings.
+- **Workout log with progressive overload:** log your sets, see what you did last time, and get a target for next time.
 
 **Open it:** https://missniceph.github.io/wellness-tracker/
 
@@ -73,11 +74,33 @@ Settings shows the date of your last backup.
 
 **Blank fields and days:** a blank number (like steps you didn't enter) is left out of averages. A yes/no question you didn't answer counts as "no." **Days so far** means the days of the week up to and including today, so a week in progress is scored fairly.
 
+## Workout log (progressive overload)
+
+On the **Today** screen, under Movement, the **Workout log** is where you record your lifting.
+
+1. **Add an exercise.** Type a name and tap **Add**, or tap one of your recent exercises.
+2. **Log each set:** weight and reps. Leave the weight blank for bodyweight moves like push-ups. Logging reps also marks the day as "Worked out."
+3. **Next time you add it,** you'll see what you did last time and what to aim for. The weight is pre-filled, so usually you only type reps.
+
+**How the "aim for" target works** ("double progression", a simple, common way to keep getting stronger):
+- If **every set** at your heaviest weight reached the **top of your rep range** (8–12 by default), it suggests **going up one weight step** (2.5 kg / 5 lbs) and starting again at the bottom of the range.
+- Otherwise, it suggests **staying at the same weight and doing one more rep**.
+- For bodyweight exercises, it suggests one more rep than your best set.
+
+You can change the rep range and weight step in **Settings → Strength training**. You can also rename or delete exercises there; renaming keeps the history.
+
+**Where to see progress:**
+- **Dashboard → Strength progress:** pick an exercise to see its chart, your best set, your recent sessions, and how much stronger you are than your first session.
+- **Weekly cards:** sets lifted, lifting volume (weight × reps, added up) versus last week, and new bests.
+
+**Est. max** is an *estimated* 1-rep max, using the Epley formula: weight × (1 + reps ÷ 30), for sets of up to 15 reps. It lets you compare a heavy set of 6 with a lighter set of 12, and you never have to test it. A **new best ⭐** means your estimated max beat every earlier session (for bodyweight moves: more reps in one set than ever before).
+
 **Measurements:** the change in each body part is compared with week 1 (or your first measured week). The change in the total only counts body parts measured both times, so skipping the optional calf won't throw it off.
 
 ## Tips
 
 - Tap a Yes/No or 1–5 button again to clear it.
+- Missed logging a workout? Use the ‹ arrow to go back to that day and add it. The targets always use your most recent earlier session.
 - Use the ‹ › arrows to move between days, or tap the date to pick one. You can fill in a missed day later.
 - Everything saves automatically as you type ("Saved ✓" at the top of the Today screen).
 - Light/dark mode follows your phone. You can change it in **Settings → Appearance**.
@@ -93,7 +116,7 @@ The whole app is a handful of plain files. There's no build step, and nothing to
 | `index.html` | The page itself, plus the title, description and link-preview tags |
 | `css/styles.css` | All colours and layout. The colours are at the top (light mode first, then dark). |
 | `js/app.js` | The screens, saving, backup/import, and the sample data |
-| `js/calc.js` | Every calculation (scores, trend weight, averages, measurement changes) |
+| `js/calc.js` | Every calculation (scores, trend weight, averages, measurement changes, workout targets and bests) |
 | `sw.js` | Lets the app open offline and load instantly from the phone's cache |
 | `manifest.webmanifest` | Home-screen name, colours and icons |
 | `icons/icon.svg` | The app icon (the source; PNG copies are made from it) |
@@ -102,7 +125,7 @@ The whole app is a handful of plain files. There's no build step, and nothing to
 
 **To change wording or colours:** edit the file on GitHub (open it, then tap the ✏️ pencil), and commit. GitHub Pages republishes in a minute or two.
 
-**After any change, bump the cache version** in `sw.js` (for example `ptracker-v2` → `ptracker-v3`). Phones get the new version the second time they open the app: the first open loads the update in the background.
+**After any change, bump the cache version** in `sw.js` (for example `ptracker-v3` → `ptracker-v4`). Phones get the new version the second time they open the app: the first open loads the update in the background.
 
 **Your data is safe during updates.** Entries live on your phone, not in these files. Still, export a backup before big changes.
 

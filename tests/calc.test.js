@@ -418,3 +418,125 @@ test('isBlankEntry', () => {
   assert.ok(!C.isBlankEntry({ habits: { h1: false } }));
   assert.ok(!C.isBlankEntry({ priorities: ['run'] }));
 });
+
+// ---------- strength / progressive overload ----------
+const SQ = 'sq', PU = 'pu';
+function liftState(days, over) {
+  const st = state(days, over);
+  st.exercises = [{ id: SQ, name: 'Goblet squat' }, { id: PU, name: 'Push-ups' }];
+  return st;
+}
+const sets = (...pairs) => pairs.map(([w, r]) => ({ w, r }));
+
+test('estimated 1-rep max (Epley)', () => {
+  close(C.e1rm(20, 10), 20 * (1 + 10 / 30));
+  assert.equal(C.e1rm(50, 1), 50);
+  assert.equal(C.e1rm(20, 16), null, 'too many reps to estimate');
+  assert.equal(C.e1rm(null, 10), null, 'bodyweight');
+  assert.equal(C.e1rm(20, 0), null);
+});
+
+test('session summary: volume, top weight, best set', () => {
+  const sm = C.sessionSummary({ sets: [...sets([20, 10], [22.5, 8], [22.5, 6]), { w: 30, r: null }] });
+  assert.equal(sm.sets, 3, 'set without reps is ignored');
+  assert.equal(sm.totalReps, 24);
+  close(sm.volume, 200 + 180 + 135);
+  assert.equal(sm.topWeight, 22.5);
+  assert.equal(sm.repsAtTop, 8);
+  close(sm.bestE1RM, 22.5 * (1 + 8 / 30));
+  assert.equal(sm.bodyweight, false);
+});
+
+test('session summary: bodyweight exercise', () => {
+  const sm = C.sessionSummary({ sets: sets([null, 12], [null, 10]) });
+  assert.equal(sm.bodyweight, true);
+  assert.equal(sm.volume, 0);
+  assert.equal(sm.maxReps, 12);
+  assert.equal(sm.bestE1RM, null);
+});
+
+test('next target: all sets at top of range → add one weight step, restart at bottom', () => {
+  const st = settings();
+  assert.deepEqual(C.nextTarget(sets([20, 12], [20, 12], [20, 13]), st), { kind: 'weight', weight: 22.5, reps: 8, sets: 3 });
+  assert.deepEqual(C.nextTarget(sets([20, 12]), settings({ unit: 'lbs' })), { kind: 'weight', weight: 25, reps: 8, sets: 1 }, '5 lbs default jump');
+  assert.deepEqual(C.nextTarget(sets([20, 6]), settings({ repLow: 4, repHigh: 6, liftIncrement: 5 })), { kind: 'weight', weight: 25, reps: 4, sets: 1 }, 'custom range & jump');
+});
+
+test('next target: below top of range → same weight, one more rep', () => {
+  assert.deepEqual(C.nextTarget(sets([20, 12], [20, 10], [20, 9]), settings()), { kind: 'reps', weight: 20, reps: 10, sets: 3 });
+  assert.deepEqual(C.nextTarget(sets([20, 5]), settings()), { kind: 'reps', weight: 20, reps: 8, sets: 1 }, 'never below the bottom of the range');
+  // only sets at the heaviest weight count (warm-ups ignored)
+  assert.deepEqual(C.nextTarget(sets([10, 5], [20, 12], [20, 12]), settings()), { kind: 'weight', weight: 22.5, reps: 8, sets: 2 });
+});
+
+test('next target: bodyweight → one more rep than best set; nothing logged → null', () => {
+  assert.deepEqual(C.nextTarget(sets([null, 12], [null, 10]), settings()), { kind: 'reps', weight: null, reps: 13, sets: 2 });
+  assert.equal(C.nextTarget([], settings()), null);
+  assert.equal(C.nextTarget(sets([20, null]), settings()), null);
+});
+
+test('exercise history: sorted, last session before a date, new bests', () => {
+  const st = liftState({
+    1: { exercises: [{ id: SQ, sets: sets([20, 10], [20, 10]) }] },
+    3: { exercises: [{ id: SQ, sets: sets([20, 12]) }, { id: PU, sets: sets([null, 8]) }] },
+    5: { exercises: [{ id: SQ, sets: sets([20, 11]) }] }, // not a best
+    8: { exercises: [{ id: SQ, sets: sets([22.5, 8]) }, { id: PU, sets: sets([null, 10]) }] },
+    9: { exercises: [{ id: SQ, sets: sets([25, null]) }] } // no reps → not a session
+  });
+  const h = C.exerciseHistory(st, SQ);
+  assert.deepEqual(h.map((x) => x.date), [dayDate(1), dayDate(3), dayDate(5), dayDate(8)]);
+  assert.deepEqual(h.map((x) => x.isBest), [false, true, false, true], 'first session is the baseline, not a "best"');
+  assert.equal(C.lastSessionBefore(st, SQ, dayDate(5)).date, dayDate(3));
+  assert.equal(C.lastSessionBefore(st, SQ, dayDate(1)), null);
+  assert.deepEqual(C.exerciseHistory(st, PU).map((x) => x.isBest), [false, true]);
+  assert.deepEqual(C.trainedExercises(st).map((x) => x.id), [SQ, PU]);
+
+  const sm = C.strengthSummary(st, SQ);
+  assert.equal(sm.sessions, 4);
+  assert.equal(sm.best.date, dayDate(8));
+  close(sm.change, C.e1rm(22.5, 8) / C.e1rm(20, 10) - 1);
+  assert.equal(sm.bestCount, 2);
+  const pu = C.strengthSummary(st, PU);
+  assert.equal(pu.bodyweight, true);
+  close(pu.change, 10 / 8 - 1);
+  assert.equal(C.strengthSummary(st, 'nope'), null);
+});
+
+test('weekly lifting volume, change vs last week, new bests', () => {
+  const st = liftState({
+    1: { exercises: [{ id: SQ, sets: sets([20, 10], [20, 10]) }] }, // 400
+    3: { exercises: [{ id: SQ, sets: sets([20, 12]) }] },          // 240, best
+    8: { exercises: [{ id: SQ, sets: sets([22.5, 10], [22.5, 10]), }, { id: PU, sets: sets([null, 10]) }] } // 450, best
+  });
+  const w1 = C.weekStats(st, 1, dayDate(7));
+  assert.equal(w1.liftSets, 3);
+  assert.equal(w1.liftVolume, 640);
+  assert.equal(w1.liftVolumeChange, null, 'no week before week 1');
+  assert.equal(w1.newBests, 1);
+  const w2 = C.weekStats(st, 2, dayDate(9));
+  assert.equal(w2.liftSets, 3);
+  assert.equal(w2.liftVolume, 450);
+  close(w2.liftVolumeChange, 450 / 640 - 1);
+  assert.equal(w2.newBests, 1, 'push-ups first session is not a best');
+  assert.equal(C.weekStats(liftState({}), 1, dayDate(7)).liftVolume, 0);
+});
+
+test('setsText formats sets for hints and CSV', () => {
+  assert.equal(C.setsText(sets([20, 10], [20, 10], [20, 10]), 'kg'), '3 × 10 @ 20 kg');
+  assert.equal(C.setsText(sets([20, 10], [22.5, 8]), 'kg'), '20 kg × 10, 22.5 kg × 8');
+  assert.equal(C.setsText(sets([20, 10], [20, 10], [20, 9]), 'kg'), '20 kg × 10, 10, 9');
+  assert.equal(C.setsText(sets([null, 12], [null, 12]), 'kg'), '2 × 12');
+  assert.equal(C.setsText(sets([null, 12], [null, 9]), 'kg'), '12, 9 reps');
+  assert.equal(C.setsText([], 'kg'), '');
+});
+
+test('a day with only an empty exercise counts as blank; with sets it is logged', () => {
+  assert.ok(C.isBlankEntry({ exercises: [{ id: SQ, sets: [{ w: 20, r: null }] }] }));
+  assert.ok(!C.isBlankEntry({ exercises: [{ id: SQ, sets: sets([20, 8]) }] }));
+});
+
+test('CSV includes exercises', () => {
+  const csv = C.toCSV(liftState({ 1: { exercises: [{ id: SQ, sets: sets([20, 10], [20, 10]) }, { id: PU, sets: sets([null, 12]) }] } }));
+  assert.ok(csv.split('\r\n')[0].includes('exercises'));
+  assert.ok(csv.includes('Goblet squat: 2 × 10 @ 20 kg | Push-ups: 1 × 12'));
+});
