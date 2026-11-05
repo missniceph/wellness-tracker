@@ -183,8 +183,8 @@ async function step(name, fn) {
     assert.match(await page.textContent('#mc-waistNavel'), /−4.0 cm since wk 1/);
   });
 
-  // Screenshots + layout checks at phone & laptop sizes in both themes.
-  for (const [vw, vh, label] of [[390, 844, 'phone'], [1280, 860, 'laptop']]) {
+  // Screenshots + layout checks at small phone, phone, tablet & laptop sizes in both themes.
+  for (const [vw, vh, label] of [[360, 740, 'phone360'], [390, 844, 'phone'], [768, 1024, 'tablet'], [1280, 860, 'laptop']]) {
     for (const theme of ['light', 'dark']) {
       await step(`layout ${label} / ${theme}: all tabs render without sideways scroll`, async () => {
         await page.setViewportSize({ width: vw, height: vh });
@@ -193,9 +193,12 @@ async function step(name, fn) {
           await tab(t);
           await page.waitForTimeout(80);
           await noHScroll(`${label} ${theme} ${t}`);
+          const clipped = await page.evaluate(() => [...document.querySelectorAll('.tabbar span, button, select, .tile .k')]
+            .filter((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent.trim().slice(0, 30)));
+          assert.deepEqual(clipped, [], `${label} ${theme} ${t}: text cut off`);
           const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
           assert.equal(bg, theme === 'dark' ? 'rgb(11, 23, 25)' : 'rgb(245, 242, 237)');
-          if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-${t}.png`), fullPage: label === 'phone' && t !== 'settings' });
+          if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${label}-${theme}-${t}.png`), fullPage: label.startsWith('phone') });
         }
       });
     }
@@ -215,7 +218,7 @@ async function step(name, fn) {
     assert.deepEqual(data.days, before.days);
     assert.deepEqual(data.settings, before.settings);
     assert.deepEqual(data.measurements, before.measurements);
-    assert.match(await page.textContent('body'), /Last backup:/);
+    await page.waitForFunction(() => /Last backup:/.test(document.body.textContent));
   });
 
   await step('Export CSV downloads a spreadsheet file', async () => {
@@ -260,6 +263,94 @@ async function step(name, fn) {
     await page.setInputFiles('#importFile', bad);
     await page.waitForFunction(() => document.getElementById('toast').textContent.includes('doesn’t look like'));
     assert.deepEqual((await getState()).days, before.days);
+  });
+
+  await step('keyboard: every focusable control on Today shows a focus ring', async () => {
+    await tab('today');
+    await page.reload();
+    await page.waitForSelector('.daynav');
+    const seen = [];
+    for (let i = 0; i < 40; i++) {
+      await page.keyboard.press('Tab');
+      const info = await page.evaluate(() => {
+        const el = document.activeElement;
+        const ring = (x) => { const cs = getComputedStyle(x); return cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) >= 2; };
+        const target = el.closest('.daypick') || el; // the date picker shows its ring on the wrapper
+        return { tag: el.tagName, text: (el.getAttribute('aria-label') || el.textContent || el.id || '').trim().slice(0, 25), ok: ring(target) };
+      });
+      seen.push(info);
+      assert.ok(info.ok, `no visible focus ring on ${info.tag} "${info.text}"`);
+    }
+    assert.equal(seen[0].text, 'Skip to content');
+  });
+
+  await step('switching tabs moves focus to the page heading', async () => {
+    await tab('weekly');
+    assert.equal(await page.evaluate(() => document.activeElement.tagName + ':' + document.activeElement.textContent), 'H1:Weekly review');
+    assert.match(await page.textContent('main'), /Week 6 starts/);
+  });
+
+  await step('a weight of 0 is not saved', async () => {
+    await tab('today');
+    await page.fill('#f-weight', '0');
+    await page.waitForTimeout(500);
+    const s = await getState();
+    const today = await page.inputValue('#datePick');
+    assert.equal((s.days[today] || {}).weight, undefined);
+  });
+
+  await step('removing a habit then typing a new one starts fresh history', async () => {
+    await tab('settings');
+    const oldId = await page.getAttribute('[name="habitName"] >> nth=3', 'data-hid');
+    await page.click('[data-act="rmhabit"] >> nth=3');
+    await page.fill('[name="habitName"] >> nth=3', 'Swim');
+    await page.click('#settingsForm button[type="submit"]');
+    const hb = (await getState()).settings.habits;
+    assert.equal(hb[3].name, 'Swim');
+    assert.notEqual(hb[3].id, oldId);
+    assert.equal(hb.length, 4);
+  });
+
+  await step('switching kg → lbs converts goals and logged weights', async () => {
+    const before = await getState();
+    const someDay = Object.keys(before.days).find((d) => typeof before.days[d].weight === 'number');
+    await page.click('[data-unit="lbs"]');
+    assert.equal(await page.inputValue('#s-startWeight'), String(Math.round(72 * 2.2046226218 * 10) / 10));
+    await page.click('#settingsForm button[type="submit"]');
+    const after = await getState();
+    assert.equal(after.settings.unit, 'lbs');
+    assert.equal(after.settings.targetGoal, Math.round(66 * 2.2046226218 * 10) / 10);
+    assert.equal(after.days[someDay].weight, Math.round(before.days[someDay].weight * 2.2046226218 * 10) / 10);
+    await page.click('[data-unit="kg"]');
+    await page.click('#settingsForm button[type="submit"]');
+    assert.equal((await getState()).settings.unit, 'kg');
+  });
+
+  await step('import ignores broken entries inside an otherwise valid backup', async () => {
+    const junk = path.join(path.dirname(backupPath), 'junk.json');
+    const data = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+    data.days['not-a-date'] = { weight: 1 };
+    data.days['2026-02-30'] = { weight: 1 };
+    data.days[before.settings.startDate] = 'oops';
+    data.measurements['99'] = { chest: 1 };
+    fs.writeFileSync(junk, JSON.stringify(data));
+    await page.setInputFiles('#importFile', junk);
+    await page.waitForFunction(() => document.getElementById('toast').textContent.includes('restored'));
+    const s = await getState();
+    assert.equal(s.days['not-a-date'], undefined);
+    assert.equal(s.days['2026-02-30'], undefined);
+    assert.equal(s.days[before.settings.startDate], undefined);
+    assert.equal(s.measurements['99'], undefined);
+    for (const t of ['today', 'dashboard', 'weekly', 'measurements']) await tab(t);
+  });
+
+  await step('share preview tags and favicon are set', async () => {
+    const og = await page.getAttribute('meta[property="og:image"]', 'content');
+    assert.match(og, /icons\/og-image\.png$/);
+    assert.equal((await page.request.get(URL + 'icons/og-image.png')).status(), 200);
+    assert.equal((await page.request.get(URL + 'icons/favicon-32.png')).status(), 200);
+    assert.ok(await page.getAttribute('meta[name="description"]', 'content'));
+    assert.equal(await page.title(), '100-Day Progress Tracker');
   });
 
   await step('manifest and icons are reachable', async () => {

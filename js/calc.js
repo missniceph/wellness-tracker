@@ -60,8 +60,6 @@
     return nums.reduce(function (a, b) { return a + b; }, 0) / nums.length;
   }
 
-  function meanOfAvailable(values) { return avg(values); }
-
   function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 
   function round(x, dp) {
@@ -195,9 +193,9 @@
       res.extraHabitsPct = den > 0 ? num / den : null;
     }
 
-    res.fitnessScore = meanOfAvailable([res.workoutPct, res.stepsPct]);
-    res.habitScore = meanOfAvailable([res.dailyHabitsPct, res.extraHabitsPct]);
-    res.weeklyScore = meanOfAvailable([res.fitnessScore, res.habitScore]);
+    res.fitnessScore = avg([res.workoutPct, res.stepsPct]);
+    res.habitScore = avg([res.dailyHabitsPct, res.extraHabitsPct]);
+    res.weeklyScore = avg([res.fitnessScore, res.habitScore]);
     res.rating = ratingFor(res.weeklyScore);
     return res;
   }

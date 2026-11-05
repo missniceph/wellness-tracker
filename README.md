@@ -46,9 +46,9 @@ You'll see a setup screen. Fill in your start date (Day 1), weights, goals, targ
 
 Your entries live only in your phone's browser. They can be lost if you clear your browser data, delete the home-screen app, or change phones. A backup protects you.
 
-**To back up:** go to **Settings → Export Backup**. A file like `100-day-tracker-backup-2026-11-05.json` is saved.
-- **iPhone:** choose **Save to Files**, ideally in iCloud Drive.
-- **Android:** it goes to **Downloads**. Copy it to Google Drive to be safe.
+**To back up:** go to **Settings → Export Backup**. It makes a file named like `100-day-tracker-backup-2026-11-05.json`.
+- **On a phone,** the share menu opens. On iPhone, choose **Save to Files** (iCloud Drive is safest). On Android, choose **Drive** or **Files**.
+- **On a computer,** it downloads to your Downloads folder.
 
 **To restore** (new phone, or after clearing data): open the tracker and tap **Settings → Import Backup**, then pick your backup file. It replaces everything on this device, so it asks you to confirm first.
 
@@ -84,33 +84,42 @@ Settings shows the date of your last backup.
 
 ---
 
-## For developers
+## What's here and how to update it
 
-Plain HTML/CSS/JS with no build step and no dependencies.
+The whole app is a handful of plain files. There's no build step, and nothing to install to run it.
 
-```
-index.html            app shell
-css/styles.css        styles (light + dark)
-js/calc.js            all calculations (pure functions, no DOM)
-js/app.js             screens, saving, backup/import, sample data
-sw.js                 offline cache
-manifest.webmanifest  home-screen install
-icons/                icon.svg + PNGs rendered from it
-tests/                unit tests + browser tests
-```
+| File | What it is |
+|---|---|
+| `index.html` | The page itself, plus the title, description and link-preview tags |
+| `css/styles.css` | All colours and layout. The colours are at the top (light mode first, then dark). |
+| `js/app.js` | The screens, saving, backup/import, and the sample data |
+| `js/calc.js` | Every calculation (scores, trend weight, averages, measurement changes) |
+| `sw.js` | Lets the app open offline and load instantly from the phone's cache |
+| `manifest.webmanifest` | Home-screen name, colours and icons |
+| `icons/icon.svg` | The app icon (the source; PNG copies are made from it) |
+| `icons/og-image.svg` | The picture shown when you share the link (the source for `og-image.png`) |
+| `tests/` | Automatic checks: `calc.test.js` (the maths) and `browser.test.js` (the app in a real browser) |
 
-Run the tests (Node 18+):
+**To change wording or colours:** edit the file on GitHub (open it, then tap the ✏️ pencil), and commit. GitHub Pages republishes in a minute or two.
+
+**After any change, bump the cache version** in `sw.js` (for example `ptracker-v2` → `ptracker-v3`). Phones get the new version the second time they open the app: the first open loads the update in the background.
+
+**Your data is safe during updates.** Entries live on your phone, not in these files. Still, export a backup before big changes.
+
+**If you change the icon or share image:** edit the `.svg` file, then run `node tests/make-icons.js` to remake the PNGs. This needs Playwright and Python's Pillow.
+
+**If the site address changes** (a new repository name or your own domain), update the two `https://missniceph.github.io/wellness-tracker/` links in `index.html`. Link previews need the full address.
+
+**Run the checks** (Node 18 or newer):
 
 ```bash
 node --test tests/calc.test.js
 ```
 
-The browser tests need Playwright with Chromium. They check phone and laptop sizes in both themes, plus backup export and import:
+The browser checks need Playwright with Chromium. They cover phone (360 and 390 px), tablet and laptop sizes, light and dark mode, keyboard focus, and backup export and import:
 
 ```bash
 node tests/browser.test.js
 ```
-
-To regenerate the PNG icons after editing `icons/icon.svg`, run `node tests/make-icons.js`.
 
 Made by [@missniceph](https://instagram.com/missniceph).

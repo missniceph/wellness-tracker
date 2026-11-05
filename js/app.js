@@ -16,7 +16,6 @@
 
   var view = document.getElementById('view');
   var tabbar = document.getElementById('tabbar');
-  var storageOK = true;
   var ui = { tab: 'today', date: null, mWeek: null };
   var saveTimer = null;
 
@@ -30,13 +29,21 @@
     if (!isObj(s)) return base;
     base.settings = isObj(s.settings) && C.isValidDate(s.settings.startDate) ? s.settings : null;
     if (base.settings && !Array.isArray(base.settings.habits)) base.settings.habits = [];
-    base.days = isObj(s.days) ? s.days : {};
-    base.weeks = isObj(s.weeks) ? s.weeks : {};
-    base.measurements = isObj(s.measurements) ? s.measurements : {};
+    base.days = pickObjects(s.days, C.isValidDate);
+    base.weeks = pickObjects(s.weeks, isWeekKey);
+    base.measurements = pickObjects(s.measurements, isWeekKey);
     base.measureUnit = s.measureUnit === 'in' ? 'in' : 'cm';
     base.photoLink = typeof s.photoLink === 'string' ? s.photoLink : '';
     base.lastBackup = typeof s.lastBackup === 'string' ? s.lastBackup : null;
     return base;
+  }
+  function isWeekKey(k) { return /^\d+$/.test(k) && Number(k) >= 1 && Number(k) <= C.TOTAL_WEEKS; }
+  /** Copy only entries whose key passes the test and whose value is an object. */
+  function pickObjects(src, keyOk) {
+    var out = {};
+    if (!isObj(src)) return out;
+    Object.keys(src).forEach(function (k) { if (keyOk(k) && isObj(src[k])) out[k] = src[k]; });
+    return out;
   }
   function load() {
     try {
@@ -137,6 +144,24 @@
     if (el) el.textContent = msg;
   }
 
+  /** Saves a file. On phones, opens the share sheet ("Save to Files") when supported. Resolves true if saved/shared. */
+  function saveFile(name, text, type) {
+    var touch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+    if (touch && navigator.canShare && typeof File === 'function') {
+      try {
+        var file = new File([text], name, { type: type.split(';')[0] });
+        if (navigator.canShare({ files: [file] })) {
+          return navigator.share({ files: [file], title: name }).then(function () { return true; }, function (e) {
+            if (e && e.name === 'AbortError') return false; // share sheet closed without saving
+            download(name, text, type);
+            return true;
+          });
+        }
+      } catch (e) { /* fall through to a normal download */ }
+    }
+    download(name, text, type);
+    return Promise.resolve(true);
+  }
   function download(name, text, type) {
     var blob = new Blob([text], { type: type });
     var url = URL.createObjectURL(blob);
@@ -176,8 +201,8 @@
       (hintId ? '<div class="hint" id="' + hintId + '"></div>' : '') + '</div>';
   }
   function pageHead(title, sub, withStatus) {
-    return '<div class="page-head"><div><h1>' + esc(title) + '</h1>' + (sub ? '<p class="muted small">' + sub + '</p>' : '') + '</div>' +
-      (withStatus ? '<span class="save-status" id="saveStatus" aria-live="polite"></span>' : '') + '</div>';
+    return '<div class="page-head"><div><h1 tabindex="-1">' + esc(title) + '</h1>' + (sub ? '<p class="muted small">' + sub + '</p>' : '') + '</div>' +
+      (withStatus ? '<span class="save-status" id="saveStatus"></span>' : '') + '</div>';
   }
 
   // ---------------- TODAY ----------------
@@ -216,7 +241,7 @@
     h += '<div class="daynav">' +
       '<button type="button" class="arrow" data-act="prev" aria-label="Previous day"' + (date <= s.startDate ? ' disabled' : '') + '>‹</button>' +
       '<label class="daypick"><strong>Day ' + day + ' of 100 · Week ' + C.weekOf(day) + '</strong>' +
-      '<span>' + (date === t ? 'Today · ' : '') + esc(niceDate(date, { weekday: 'long', month: 'long', day: 'numeric' })) + '</span>' +
+      '<span>' + (date === t ? 'Today · ' : '') + esc(niceDate(date, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })) + '</span>' +
       '<input type="date" id="datePick" aria-label="Pick a date" value="' + date + '" min="' + s.startDate + '" max="' + lastDate() + '"></label>' +
       '<button type="button" class="arrow" data-act="next" aria-label="Next day"' + (date >= lastDate() ? ' disabled' : '') + '>›</button></div>';
     if (date !== clampDate(t)) h += '<a href="#today" class="today-link" data-act="gotoday">Jump to today</a>';
@@ -232,7 +257,7 @@
       scale('sleep', e.sleep, 'Sleep quality', 'poor', 'great') + '</section>';
 
     h += '<section class="card"><h2><span class="dot"></span>Movement</h2>' +
-      '<div class="field">' + ynRow('workout', e.workout, 'Worked out?', 'Goal: ' + (s.workoutsTarget || 0) + ' per week') + '</div>' +
+      '<div class="field">' + ynRow('workout', e.workout, 'Worked out?', s.workoutsTarget ? 'Goal: ' + s.workoutsTarget + ' per week' : '') + '</div>' +
       numField('steps', e.steps, 'Steps', '', 'hint-steps', { int: true, placeholder: 'e.g. 5000' }) + '</section>';
 
     h += '<section class="card"><h2><span class="dot"></span>Fuel</h2><div class="row2">' +
@@ -276,11 +301,11 @@
     if (!bar) return;
     bar.style.width = Math.round(p * 100) + '%';
     document.getElementById('dhPct').textContent = pct(p);
-    var parts = ['water', 'why', 'plan'];
-    if (C.hasProteinTarget(s)) parts.push('protein');
+    var parts = ['Water', 'Why', 'Plan'];
+    if (C.hasProteinTarget(s)) parts.push('Protein');
     var done = [e.water === true, e.reviewedWhy === true, e.plannedTomorrow === true];
     if (C.hasProteinTarget(s)) done.push(C.proteinHit(e, s));
-    document.getElementById('dhHint').textContent = parts.map(function (n, i) { return (done[i] ? '✓ ' : '○ ') + n; }).join('   ');
+    document.getElementById('dhHint').textContent = parts.map(function (n, i) { return (done[i] ? '✓ ' : '○ ') + n; }).join(' · ');
 
     var tw = C.trendWeight(state.days, date);
     setHint('hint-weight', tw !== null ? '7-day trend: ' + w(tw) : 'Weigh in to see your 7-day trend', false);
@@ -308,13 +333,13 @@
     h += '<div class="tiles">' +
       tile('Days left', fmt(d.daysLeft), '', true) +
       tile('Days logged', fmt(d.daysLogged), ' / 100') +
-      tile('Workouts this week', fmt(d.workoutsThisWeek), ' / ' + (s.workoutsTarget || 0)) +
+      tile('Workouts this week', fmt(d.workoutsThisWeek), ' / ' + (s.workoutsTarget || '—')) +
       tile("This week's score", pct(d.weekScore), d.weekRating ? '<br>' + esc(d.weekRating) : '') +
       tile('Starting weight', C.isNum(d.startWeight) ? fmt(d.startWeight, 1) : '—', ' ' + unit()) +
-      tile('Trend weight', C.isNum(d.trendWeight) ? fmt(d.trendWeight, 1) : '—', ' ' + unit() +
+      tile('Current trend weight', C.isNum(d.trendWeight) ? fmt(d.trendWeight, 1) : '—', ' ' + unit() +
         (d.trendAsOf && d.trendAsOf !== t ? '<br>as of ' + esc(niceDate(d.trendAsOf)) : '')) +
       tile('Total change', '<span class="' + changeClass(d.totalChange) + '">' + signed(d.totalChange, 1) + '</span>', ' ' + unit()) +
-      tile('To target goal', d.distanceToTarget === 0 ? '✓' : (C.isNum(d.distanceToTarget) ? fmt(d.distanceToTarget, 1) : '—'),
+      tile('Distance to target goal', d.distanceToTarget === 0 ? '✓' : (C.isNum(d.distanceToTarget) ? fmt(d.distanceToTarget, 1) : '—'),
         d.distanceToTarget === 0 ? ' reached' : ' ' + unit()) +
       '</div>';
 
@@ -429,6 +454,11 @@
     if (!weeks.length) {
       h += '<div class="card empty">Week 1 starts on ' + esc(niceDate(s.startDate, { weekday: 'long', month: 'long', day: 'numeric' })) + '.</div>';
     }
+    var nextWeek = weeks.length ? weeks[0].week + 1 : 1;
+    if (weeks.length && nextWeek <= C.TOTAL_WEEKS) {
+      h += '<p class="muted small">Week ' + nextWeek + ' starts ' + esc(niceDate(C.dateForDay(s.startDate, C.weekRange(nextWeek).first), { weekday: 'short', month: 'short', day: 'numeric' })) +
+        '. Each new week shows up here when it starts.</p>';
+    }
     weeks.forEach(function (x, idx) {
       var rv = state.weeks[x.week] || {};
       var rc = ratingClass(x.rating);
@@ -443,7 +473,7 @@
         '<dl class="stats">' +
         stat('Avg weight', w(x.avgWeight)) +
         stat(x.week === 1 ? 'vs. start' : 'vs. last week', '<span class="' + changeClass(x.weightChange) + '">' + signed(x.weightChange, 1, ' ' + unit()) + '</span>') +
-        stat('Workouts', x.workouts + (C.isNum(x.workoutTarget) ? ' / ' + fmt(x.workoutTarget, x.daysSoFar === 7 ? 0 : 1) : '')) +
+        stat('Workouts / goal', x.workouts + (C.isNum(x.workoutTarget) ? ' / ' + fmt(x.workoutTarget, x.daysSoFar === 7 ? 0 : 1) : '')) +
         stat('Workout %', pct(x.workoutPct)) +
         stat('Avg steps', fmt(x.avgSteps)) +
         stat('Steps %', pct(x.stepsPct)) +
@@ -514,7 +544,7 @@
 
     var weeksWith = Object.keys(state.measurements).map(Number).filter(function (n) { return C.hasMeasurements(state.measurements[n]); }).sort(function (a, b) { return a - b; });
     if (weeksWith.length) {
-      h += '<section class="card"><h2><span class="dot"></span>History</h2><div class="table-wrap"><table class="hist"><thead><tr><th>Week</th><th>Date</th><th>Waist (navel)</th><th>Hips</th><th>Total</th><th>Change</th></tr></thead><tbody>' +
+      h += '<section class="card"><h2><span class="dot"></span>History</h2><div class="table-wrap" tabindex="0" role="region" aria-label="Measurement history"><table class="hist"><caption class="sr-only">Measurements by week (' + u + ')</caption><thead><tr><th>Week</th><th>Date</th><th>Waist (navel)</th><th>Hips</th><th>Total</th><th>Change</th></tr></thead><tbody>' +
         weeksWith.map(function (n) {
           var mm = state.measurements[n], cc = C.measurementChanges(state.measurements, n), t = C.measurementTotal(mm);
           return '<tr><td>' + n + '</td><td>' + (mm.date ? esc(niceDate(mm.date, { month: 'short', day: 'numeric' })) : '—') + '</td><td>' +
@@ -568,37 +598,38 @@
     var u = s.unit || 'kg';
     var h = '<form id="settingsForm" novalidate>';
     h += '<section class="card"><h2><span class="dot"></span>About me</h2>' +
-      '<div class="field"><label for="s-name">Name</label><input type="text" id="s-name" name="name" value="' + esc(s.name || '') + '" autocomplete="given-name"></div>' +
-      '<div class="field"><label for="s-start">Challenge start date (Day 1)</label><input type="date" id="s-start" name="startDate" value="' + esc(s.startDate || '') + '" required>' +
+      '<div class="field"><label for="s-name">Name</label><input type="text" id="s-name" name="name" maxlength="40" value="' + esc(s.name || '') + '" autocomplete="given-name"></div>' +
+      '<div class="field"><label for="s-start">Challenge start date (Day 1)</label><input type="date" id="s-start" name="startDate" value="' + esc(s.startDate || '') + '" required aria-describedby="s-start-hint formErr">' +
       '<div class="hint" id="s-start-hint"></div></div>' +
-      '<div class="field"><label for="s-why">My why</label><textarea id="s-why" name="why" placeholder="The version of me I’m building is…">' + esc(s.why || '') + '</textarea>' +
+      '<div class="field"><label for="s-why">My why</label><textarea id="s-why" name="why" maxlength="500" placeholder="The version of me I’m building is…">' + esc(s.why || '') + '</textarea>' +
       '<div class="hint">Shown at the top of your Today screen.</div></div></section>';
 
     h += '<section class="card"><h2><span class="dot"></span>Weight goals</h2>' +
       '<div class="field"><div class="label">Weight unit</div><div class="seg" role="group" aria-label="Weight unit">' +
       '<button type="button" data-unit="kg" aria-pressed="' + (u === 'kg') + '">kg</button><button type="button" data-unit="lbs" aria-pressed="' + (u === 'lbs') + '">lbs</button></div>' +
-      '<input type="hidden" name="unit" value="' + u + '"></div>' +
+      '<input type="hidden" name="unit" value="' + u + '"><div class="hint" id="unitHint" aria-live="polite"></div></div>' +
       '<div class="row2">' + sNum('startWeight', 'Starting weight', n(s.startWeight), 0.1) + sNum('minGoal', 'Minimum goal', n(s.minGoal), 0.1) + '</div>' +
       '<div class="row2">' + sNum('targetGoal', 'Target goal', n(s.targetGoal), 0.1) + sNum('dreamGoal', 'Dream goal', n(s.dreamGoal), 0.1) + '</div></section>';
 
     h += '<section class="card"><h2><span class="dot"></span>Daily & weekly targets</h2>' +
       '<div class="row2">' + sNum('stepsTarget', 'Daily steps', n(s.stepsTarget), 1) + sNum('workoutsTarget', 'Workouts / week', n(s.workoutsTarget), 1) + '</div>' +
-      '<div class="row2">' + sNum('proteinTarget', 'Protein (g) · optional', n(s.proteinTarget), 1) + sNum('calorieTarget', 'Calories · optional', n(s.calorieTarget), 1) + '</div></section>';
+      '<div class="row2">' + sNum('proteinTarget', 'Protein (g)', n(s.proteinTarget), 1, 'Optional') + sNum('calorieTarget', 'Calories', n(s.calorieTarget), 1, 'Optional') + '</div></section>';
 
-    h += '<section class="card"><h2><span class="dot"></span>Extra habits (up to 5)</h2><p class="hint" style="margin-top:-6px;margin-bottom:12px">Leave a name blank to remove it. Target = days per week.</p>' +
+    h += '<section class="card"><h2><span class="dot"></span>Extra habits (up to 5)</h2><p class="hint" style="margin-top:-6px;margin-bottom:12px">Pick how many days a week you aim for. Renaming a habit keeps its history; ✕ removes it.</p>' +
       habits.map(function (hb, i) {
         var opts = '';
         for (var d = 1; d <= 7; d++) opts += '<option value="' + d + '"' + (Number(hb.target) === d ? ' selected' : '') + '>' + d + '× / wk</option>';
-        return '<div class="habit-edit"><input type="text" name="habitName" data-hid="' + esc(hb.id || '') + '" aria-label="Habit ' + (i + 1) + ' name" placeholder="Habit ' + (i + 1) + '" value="' + esc(hb.name || '') + '">' +
-          '<select name="habitTarget" aria-label="Habit ' + (i + 1) + ' days per week">' + opts + '</select></div>';
+        return '<div class="habit-edit"><input type="text" name="habitName" maxlength="60" data-hid="' + esc(hb.id || '') + '" aria-label="Habit ' + (i + 1) + ' name" placeholder="Habit ' + (i + 1) + '" value="' + esc(hb.name || '') + '">' +
+          '<select name="habitTarget" aria-label="Habit ' + (i + 1) + ' days per week">' + opts + '</select>' +
+          '<button type="button" class="btn icon" data-act="rmhabit" aria-label="Remove habit ' + (i + 1) + '">✕</button></div>';
       }).join('') + '</section>';
     h += '<div id="formErr" class="err" role="alert"></div>';
     h += '<button type="submit" class="btn primary block" style="margin-bottom:14px">' + (isSetup ? 'Start my 100 days' : 'Save settings') + '</button></form>';
     return h;
   }
-  function sNum(name, label, v, step) {
+  function sNum(name, label, v, step, placeholder) {
     return '<div class="field"><label for="s-' + name + '">' + esc(label) + '</label><input type="number" id="s-' + name + '" name="' + name + '" inputmode="' +
-      (step === 1 ? 'numeric' : 'decimal') + '" step="' + step + '" min="0" value="' + v + '"></div>';
+      (step === 1 ? 'numeric' : 'decimal') + '" step="' + step + '" min="0" value="' + v + '"' + (placeholder ? ' placeholder="' + placeholder + '"' : '') + '></div>';
   }
 
   function renderSetup() {
@@ -683,21 +714,25 @@
   function submitSettings(form) {
     var s = readSettingsForm(form);
     var err = document.getElementById('formErr');
-    if (!C.isValidDate(s.startDate)) { err.textContent = 'Please choose your challenge start date (Day 1).'; return; }
+    var startEl = form.elements.startDate;
+    if (!C.isValidDate(s.startDate)) {
+      err.textContent = 'Please choose your challenge start date (Day 1).';
+      startEl.setAttribute('aria-invalid', 'true');
+      startEl.focus();
+      return;
+    }
+    startEl.removeAttribute('aria-invalid');
     var prevUnit = s._prevUnit;
     delete s._prevUnit;
     var isSetup = !state.settings;
-    if (!isSetup && prevUnit && prevUnit !== s.unit && Object.keys(state.days).length) {
-      var factor = s.unit === 'lbs' ? LBS_PER_KG : 1 / LBS_PER_KG;
-      if (window.confirm('Convert your logged weights from ' + prevUnit + ' to ' + s.unit + '?\n\nOK = convert them. Cancel = keep the numbers as they are.')) {
-        convertWeights(factor);
-      }
+    if (!isSetup && prevUnit && prevUnit !== s.unit) {
+      convertWeights(s.unit === 'lbs' ? LBS_PER_KG : 1 / LBS_PER_KG);
     }
     state.settings = s;
     if (!saveNow()) return;
     if (isSetup) {
       ui.date = null;
-      toast('You’re all set. Day 1, here we go!');
+      toast('You’re all set. Let’s go!');
       go('today');
     } else {
       toast('Settings saved');
@@ -717,19 +752,23 @@
   // ---------------- backup ----------------
   function exportBackup() {
     flush();
-    state.lastBackup = today();
-    saveNow();
     var data = JSON.parse(JSON.stringify(state));
     data.app = '100-Day Progress Tracker';
     data.exportedAt = new Date().toISOString();
-    download('100-day-tracker-backup-' + today() + '.json', JSON.stringify(data, null, 2), 'application/json');
-    toast('Backup downloaded');
-    if (ui.tab === 'settings') renderSettings();
+    data.lastBackup = today();
+    saveFile('100-day-tracker-backup-' + today() + '.json', JSON.stringify(data, null, 2), 'application/json').then(function (ok) {
+      if (!ok) return;
+      state.lastBackup = today();
+      saveNow();
+      toast('Backup saved');
+      if (ui.tab === 'settings') renderSettings();
+    });
   }
   function exportCSV() {
     flush();
-    download('100-day-tracker-' + today() + '.csv', '﻿' + C.toCSV(state), 'text/csv;charset=utf-8');
-    toast('CSV downloaded');
+    saveFile('100-day-tracker-' + today() + '.csv', '\ufeff' + C.toCSV(state), 'text/csv;charset=utf-8').then(function (ok) {
+      if (ok) toast('CSV saved');
+    });
   }
   function importBackup(file) {
     var reader = new FileReader();
@@ -760,7 +799,7 @@
     var s = {
       name: 'Nice', startDate: start, unit: 'kg', startWeight: 72, minGoal: 69, targetGoal: 66, dreamGoal: 63,
       stepsTarget: 5000, workoutsTarget: 4, proteinTarget: 100, calorieTarget: 1600,
-      why: 'I’m building a strong, calm, energized version of me — someone who keeps promises to herself.',
+      why: 'I’m building a strong, calm, energized version of me — someone who keeps the promises I make to myself.',
       habits: habits
     };
     var days = {};
@@ -840,7 +879,13 @@
     });
     ({ today: renderToday, dashboard: renderDashboard, weekly: renderWeekly, measurements: renderMeasurements, settings: renderSettings })[ui.tab]();
   }
-  window.addEventListener('hashchange', function () { flush(); render(); window.scrollTo(0, 0); });
+  window.addEventListener('hashchange', function () {
+    flush();
+    render();
+    window.scrollTo(0, 0);
+    var h1 = view.querySelector('h1');
+    if (h1) h1.focus({ preventScroll: true });
+  });
 
   // ---------------- events ----------------
   view.addEventListener('click', function (ev) {
@@ -859,6 +904,13 @@
     if (act === 'import') return document.getElementById('importFile').click();
     if (act === 'sample') return loadSample();
     if (act === 'clear') return clearAll();
+    if (act === 'rmhabit') {
+      var inp = b.parentNode.querySelector('[name="habitName"]');
+      inp.value = '';
+      inp.setAttribute('data-hid', ''); // a habit typed here later starts fresh
+      inp.focus();
+      return;
+    }
 
     var key = b.getAttribute('data-yn') || b.getAttribute('data-scale');
     if (key) {
@@ -883,7 +935,16 @@
     }
     if (b.hasAttribute('data-unit')) {
       var u = b.getAttribute('data-unit');
-      b.form.elements.unit.value = u;
+      var f = b.form;
+      if (state.settings && f.elements.unit.value !== u) {
+        var factor = u === 'lbs' ? LBS_PER_KG : 1 / LBS_PER_KG;
+        ['startWeight', 'minGoal', 'targetGoal', 'dreamGoal'].forEach(function (n) {
+          var v = parseNum(f.elements[n].value);
+          if (v !== null) f.elements[n].value = Math.round(v * factor * 10) / 10;
+        });
+        document.getElementById('unitHint').textContent = 'Goals converted to ' + u + '. Your logged weights will be converted when you save.';
+      }
+      f.elements.unit.value = u;
       Array.prototype.forEach.call(b.parentNode.querySelectorAll('button'), function (x) { x.setAttribute('aria-pressed', String(x === b)); });
       return;
     }
@@ -897,8 +958,8 @@
     var t = ev.target;
     if (t.hasAttribute('data-num')) {
       var v = parseNum(t.value);
-      if (v !== null && v < 0) v = null;
       var k = t.getAttribute('data-num');
+      if (v !== null && (v < 0 || (k === 'weight' && v === 0))) v = null;
       if (v !== null && k !== 'weight') v = Math.round(v);
       setField(ui.date, k, v);
       updateTodayLive();
@@ -964,8 +1025,7 @@
   });
 
   // ---------------- start ----------------
-  storageOK = checkStorage();
-  document.getElementById('storageWarning').hidden = storageOK;
+  document.getElementById('storageWarning').hidden = checkStorage();
   render();
 
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
