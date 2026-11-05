@@ -125,7 +125,9 @@ The whole app is a handful of plain files. There's no build step, and nothing to
 
 **To change wording or colours:** edit the file on GitHub (open it, then tap the ✏️ pencil), and commit. GitHub Pages republishes in a minute or two.
 
-**After any change, bump the cache version** in `sw.js` (for example `ptracker-v3` → `ptracker-v4`). Phones get the new version the second time they open the app: the first open loads the update in the background.
+**After any change, bump the cache version** in `sw.js` (for example `ptracker-v4` → `ptracker-v5`). Whenever a phone is online, opening the app loads the latest version. Bumping the version also makes an app that's already open (resumed from the background) reload itself with the update the next time you switch back to it.
+
+**Not seeing an update?** Wait about 2 minutes after merging for GitHub to publish it, then fully close the app (on iPhone, swipe it away in the app switcher) and open it again.
 
 **Your data is safe during updates.** Entries live on your phone, not in these files. Still, export a backup before big changes.
 
