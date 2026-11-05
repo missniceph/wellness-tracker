@@ -151,7 +151,7 @@ async function step(name, fn) {
     await tab('dashboard');
     assert.equal(await page.locator('.tile').count(), 8);
     assert.equal(await page.locator('.milestones li').count(), 3);
-    assert.equal(await page.locator('svg.chart').count(), 2);
+    assert.equal(await page.locator('svg.chart').count(), 3, 'weight, weekly scores, strength');
     assert.ok(await page.locator('svg.chart .pt').count() > 10, 'weight dots drawn');
     assert.equal(await page.locator('svg.chart .bar').count(), 5, 'five weeks scored');
     const tiles = await page.$$eval('.tile', (els) => els.map((e) => e.textContent));
@@ -342,6 +342,123 @@ async function step(name, fn) {
     assert.equal(s.days[before.settings.startDate], undefined);
     assert.equal(s.measurements['99'], undefined);
     for (const t of ['today', 'dashboard', 'weekly', 'measurements']) await tab(t);
+  });
+
+  await step('workout log: add an exercise by name, log sets, auto-mark "worked out"', async () => {
+    await page.evaluate(() => { localStorage.setItem('ptracker.v1', JSON.stringify(window.__tracker.sampleData())); });
+    await page.reload();
+    await tab('settings');
+    await tab('today');
+    await page.click('[data-act="prev"]'); // yesterday has no workout in the sample → use a clean day
+    const date = await page.inputValue('#datePick');
+    const s0 = await getState();
+    if (s0.days[date] && s0.days[date].exercises) {
+      await page.evaluate((d) => { const s = JSON.parse(localStorage.getItem('ptracker.v1')); delete s.days[d]; localStorage.setItem('ptracker.v1', JSON.stringify(s)); }, date);
+      await page.reload(); await page.waitForSelector('.daynav');
+      await page.click('[data-act="prev"]');
+    }
+    await page.fill('#newEx', 'Hip thrust');
+    await page.press('#newEx', 'Enter');
+    await page.waitForSelector('[data-set="0:0:w"]');
+    assert.equal(await page.locator('[data-set$=":w"]').count(), 3, 'new exercise starts with 3 sets');
+    assert.match(await page.textContent('#workoutCard'), /First time logging this/);
+    await page.fill('[data-set="0:0:w"]', '30');
+    await page.fill('[data-set="0:0:r"]', '10');
+    await page.waitForTimeout(500);
+    const s = await getState();
+    const e = s.days[date];
+    const ex = s.exercises.find((x) => x.name === 'Hip thrust');
+    assert.ok(ex, 'exercise saved to my list');
+    assert.deepEqual(e.exercises[0].sets[0], { w: 30, r: 10 });
+    assert.equal(e.workout, true, 'logging reps marks the day as a workout');
+    assert.equal(await page.getAttribute('[data-yn="workout"][data-val="true"]', 'aria-pressed'), 'true');
+  });
+
+  await step('workout log: + Add set copies the weight; ✕ removes a set; empty sets are not counted', async () => {
+    await page.click('[data-act="addset"]');
+    assert.equal(await page.inputValue('[data-set="0:3:w"]'), '');
+    await page.fill('[data-set="0:1:w"]', '30'); await page.fill('[data-set="0:1:r"]', '12');
+    await page.click('[data-act="rmset"][data-si="3"]');
+    await page.click('[data-act="rmset"][data-si="2"]');
+    await page.click('[data-act="addset"]');
+    assert.equal(await page.inputValue('[data-set="0:2:w"]'), '30');
+    await page.fill('[data-set="0:2:r"]', '12');
+    await page.waitForTimeout(500);
+    const date = await page.inputValue('#datePick');
+    const sets = (await getState()).days[date].exercises[0].sets;
+    assert.deepEqual(sets, [{ w: 30, r: 10 }, { w: 30, r: 12 }, { w: 30, r: 12 }]);
+  });
+
+  await step('workout log: next session shows last time and a progressive-overload target', async () => {
+    await page.click('[data-act="next"]'); // today
+    await page.fill('#newEx', 'hip THRUST'); // matches the existing exercise, any capitals
+    await page.click('[data-act="addex"]');
+    const card = await page.textContent('#workoutCard');
+    assert.match(card, /Last time \(.+\): 30 kg × 10, 12, 12/);
+    assert.match(card, /Stay at 30 kg and aim for 11 reps per set/);
+    assert.equal(await page.getAttribute('[data-set="0:0:w"]', 'value'), '30', 'weight pre-filled from the target');
+    assert.equal(await page.getAttribute('[data-set="0:0:r"]', 'placeholder'), '11');
+    for (let i = 0; i < 3; i++) await page.fill(`[data-set="0:${i}:r"]`, '12');
+    assert.equal(await page.textContent('#best-0'), '', 'matching your best set is not a new best');
+    await page.fill('[data-set="0:0:r"]', '13');
+    assert.match(await page.textContent('#best-0'), /New best/);
+    assert.equal((await getState()).exercises.filter((x) => /hip thrust/i.test(x.name)).length, 1, 'no duplicate exercise');
+  });
+
+  await step('workout log: removing an exercise with sets asks first', async () => {
+    page.removeAllListeners('dialog');
+    page.once('dialog', (d) => d.dismiss());
+    await page.click('[data-act="rmex"][data-xi="0"]');
+    assert.equal(await page.locator('[data-set="0:0:r"]').count(), 1, 'kept after cancelling');
+    page.on('dialog', (d) => d.accept());
+  });
+
+  await step('dashboard: strength progress card switches exercises', async () => {
+    await tab('dashboard');
+    await page.waitForSelector('#strengthEx');
+    const first = await page.inputValue('#strengthEx');
+    const ids = await page.$$eval('#strengthEx option', (o) => o.map((x) => x.value));
+    assert.ok(ids.length >= 5);
+    await page.selectOption('#strengthEx', ids[ids.length - 1]);
+    assert.notEqual(await page.inputValue('#strengthEx'), first);
+    assert.match(await page.textContent('#strength'), /Sessions/);
+  });
+
+  await step('weekly: lifting volume and new bests are shown', async () => {
+    await tab('weekly');
+    const txt = await page.textContent('article.card >> nth=0');
+    assert.match(txt, /Sets lifted/);
+    assert.match(txt, /Lifting volume/);
+  });
+
+  await step('settings: rename keeps history; delete removes the exercise and its sets', async () => {
+    await tab('settings');
+    const names = await page.$$eval('[name="exName"]', (els) => els.map((e) => e.value));
+    const idx = names.indexOf('Lat pulldown');
+    await page.fill(`[name="exName"] >> nth=${idx}`, 'Cable lat pulldown');
+    const delIdx = names.indexOf('Hip thrust');
+    await page.click(`.ex-edit >> nth=${delIdx} >> [data-act="rmexdef"]`);
+    await page.click('#settingsForm button[type="submit"]');
+    const s = await getState();
+    const lat = s.exercises.find((x) => x.name === 'Cable lat pulldown');
+    assert.ok(lat);
+    assert.ok(Object.values(s.days).some((e) => (e.exercises || []).some((x) => x.id === lat.id)), 'history kept');
+    assert.ok(!s.exercises.some((x) => x.name === 'Hip thrust'));
+    assert.ok(!Object.values(s.days).some((e) => (e.exercises || []).some((x) => !s.exercises.find((y) => y.id === x.id))), 'sets removed too');
+  });
+
+  await step('settings: switching to lbs converts lifted weights and the weight step', async () => {
+    const before = await getState();
+    const d = Object.keys(before.days).find((k) => (before.days[k].exercises || []).some((x) => x.sets[0].w));
+    const w0 = before.days[d].exercises.find((x) => x.sets[0].w).sets[0].w;
+    await page.click('[data-unit="lbs"]');
+    assert.equal(await page.inputValue('#s-liftIncrement'), '5');
+    await page.click('#settingsForm button[type="submit"]');
+    const after = await getState();
+    assert.equal(after.days[d].exercises.find((x) => x.sets[0].w).sets[0].w, Math.round(w0 * 2.2046226218 * 10) / 10);
+    assert.equal(after.settings.liftIncrement, 5);
+    await page.click('[data-unit="kg"]');
+    await page.click('#settingsForm button[type="submit"]');
   });
 
   await step('share preview tags and favicon are set', async () => {

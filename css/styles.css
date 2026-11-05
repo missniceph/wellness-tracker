@@ -163,6 +163,8 @@ input[type="text"], input[type="number"], input[type="date"], input[type="url"],
   appearance: none; -webkit-appearance: none;
 }
 input[type="number"] { font-size: 1.2rem; font-weight: 600; }
+input[type="number"] { -moz-appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 textarea { min-height: 84px; resize: vertical; }
 input:focus, textarea:focus, select:focus { border-color: var(--teal-2); background: var(--surface); }
 :focus { outline: none; }
@@ -271,6 +273,35 @@ details.reflect { margin-top: 12px; }
 details.reflect summary { cursor: pointer; font-weight: 650; padding: 8px 0; color: var(--teal-2); }
 .empty { text-align: center; padding: 28px 16px; color: var(--muted); }
 
+/* ---------- workout log ---------- */
+.exercise { border-top: 1px solid var(--line); padding: 14px 0; }
+.exercise:first-of-type { border-top: 0; padding-top: 0; }
+.ex-head { display: flex; align-items: center; gap: 8px; }
+.ex-head h3 { font-size: 1.02rem; flex: 1; margin: 0; }
+.ex-head .btn.icon { min-height: 40px; min-width: 40px; }
+.best { color: var(--coral-ink); font-weight: 700; font-size: .85rem; }
+.target { margin: 4px 0 0; font-weight: 650; color: var(--teal-2); font-size: .92rem; }
+.set-grid { display: grid; grid-template-columns: 26px 1fr 14px 1fr 44px; gap: 6px 6px; align-items: center; margin-top: 10px; }
+.set-h { font-size: .75rem; color: var(--muted); font-weight: 600; text-align: center; }
+.set-n { text-align: center; font-weight: 700; color: var(--muted); }
+.times { text-align: center; color: var(--muted); }
+.set-grid input { min-height: 46px; padding: 8px 6px; text-align: center; font-size: 1.1rem; }
+.set-grid .btn.icon { min-width: 44px; min-height: 44px; }
+.btn.add-set { margin-top: 10px; min-height: 44px; width: 100%; border-style: dashed; }
+.add-ex { border-top: 1px solid var(--line); padding-top: 14px; }
+.exercise + .add-ex, .add-ex:first-child { margin-top: 0; }
+.add-ex > label { display: block; font-weight: 600; margin-bottom: 6px; }
+.add-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.add-row .btn { min-width: 76px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip-btn { font: inherit; font-size: .9rem; font-weight: 600; min-height: 44px; padding: 6px 14px; border-radius: 99px; cursor: pointer;
+  border: 1.5px solid var(--field-border); background: var(--surface-2); color: var(--text); }
+.avg3 { grid-template-columns: repeat(3, 1fr); margin-bottom: 12px; }
+.chart .pt-plain { fill: var(--teal); }
+table.hist td.wrap, table.hist th.wrap { white-space: normal; text-align: left; }
+.ex-edit { grid-template-columns: 1fr 48px; }
+.ex-edit.removed input { text-decoration: line-through; opacity: .6; }
+
 /* ---------- measurements ---------- */
 .m-row { display: grid; grid-template-columns: 1fr 120px; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .m-row:last-child { border-bottom: 0; }
@@ -290,7 +321,10 @@ table.hist th { color: var(--muted); font-weight: 600; font-size: .8rem; }
   .habit-edit { grid-template-columns: 1fr 48px; padding-bottom: 10px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
   .habit-edit:last-child { border-bottom: 0; }
   .habit-edit input { grid-column: 1 / -1; }
+  .ex-edit { padding-bottom: 0; border-bottom: 0; margin-bottom: 8px; }
+  .ex-edit input { grid-column: auto; }
 }
+@media (max-width: 360px) { .avg4.avg3 { grid-template-columns: repeat(3, 1fr); } }
 .setup-hero { text-align: center; padding: 18px 8px 8px; }
 .setup-hero img { width: 72px; height: 72px; border-radius: 18px; }
 .setup-hero h1 { margin-top: 10px; }

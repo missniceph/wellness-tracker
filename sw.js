@@ -2,7 +2,7 @@
 // Files are served from the phone's cache straight away, then refreshed from the
 // internet in the background, so an update shows up the next time the app is opened.
 // Change CACHE (e.g. ptracker-v3) whenever the file list below changes.
-var CACHE = 'ptracker-v2';
+var CACHE = 'ptracker-v3';
 var FILES = ['./', 'index.html', 'css/styles.css', 'js/calc.js', 'js/app.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/favicon-32.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
